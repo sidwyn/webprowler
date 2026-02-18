@@ -1,10 +1,12 @@
 /**
  * DOM action executor.
  * Takes an Action and performs it on the real page.
+ * Highlights elements during execution.
  */
 
 import type { Action, StepResult } from '../types';
 import { resolveRef, takeSnapshot } from './parser';
+import { highlightElement, highlightSuccess, highlightError, clearHighlights } from './highlight';
 
 function delay(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -25,6 +27,9 @@ async function executeClick(ref: string): Promise<void> {
   const el = getElement(ref);
   scrollIntoView(el);
   await delay(50);
+
+  highlightElement(el, { kind: 'click' });
+  await delay(300);
 
   // Focus first (important for dropdowns, menus)
   el.focus();
@@ -47,11 +52,17 @@ async function executeClick(ref: string): Promise<void> {
   el.dispatchEvent(new MouseEvent('pointerup', eventInit));
   el.dispatchEvent(new MouseEvent('mouseup', eventInit));
   el.dispatchEvent(new MouseEvent('click', eventInit));
+
+  highlightSuccess(el);
 }
 
 async function executeType(ref: string, text: string, clear: boolean): Promise<void> {
   const el = getElement(ref);
   scrollIntoView(el);
+
+  highlightElement(el, { kind: 'type', detail: text });
+  await delay(300);
+
   el.focus();
   await delay(50);
 
@@ -61,8 +72,7 @@ async function executeType(ref: string, text: string, clear: boolean): Promise<v
       el.dispatchEvent(new Event('input', { bubbles: true }));
     }
 
-    // Use execCommand for React/framework compatibility
-    // Falls back to direct value set
+    // Use native setter for React/framework compatibility
     const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
       el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
       'value'
@@ -81,6 +91,8 @@ async function executeType(ref: string, text: string, clear: boolean): Promise<v
     el.textContent = (el.textContent ?? '') + text;
     el.dispatchEvent(new Event('input', { bubbles: true }));
   }
+
+  highlightSuccess(el);
 }
 
 async function executeSelect(ref: string, value: string): Promise<void> {
@@ -89,9 +101,15 @@ async function executeSelect(ref: string, value: string): Promise<void> {
     throw new Error(`Element ${ref} is not a <select>`);
   }
   scrollIntoView(el);
+
+  highlightElement(el, { kind: 'select', detail: value });
+  await delay(300);
+
   el.focus();
   el.value = value;
   el.dispatchEvent(new Event('change', { bubbles: true }));
+
+  highlightSuccess(el);
 }
 
 async function executeScroll(direction: 'up' | 'down', amount?: number): Promise<void> {
@@ -130,7 +148,6 @@ export async function executeAction(action: Action): Promise<StepResult> {
         await executeNavigate(action.url);
         return { success: true }; // Page will reload
       case 'read':
-        // Read just returns a fresh snapshot
         const snapshot = takeSnapshot({
           filter: 'all',
           viewportOnly: true,
@@ -146,6 +163,12 @@ export async function executeAction(action: Action): Promise<StepResult> {
 
     return { success: true };
   } catch (error) {
+    // Highlight error on the target element if possible
+    if ('ref' in action && action.ref) {
+      const el = resolveRef(action.ref);
+      if (el) highlightError(el);
+    }
+
     return {
       success: false,
       error: error instanceof Error ? error.message : String(error),

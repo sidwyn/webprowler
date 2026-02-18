@@ -1,6 +1,6 @@
 /**
  * Side panel app — thin UI layer.
- * Sends tasks to service worker, renders status updates.
+ * Sends tasks to service worker, renders status updates, manages recordings.
  */
 
 // ─── DOM refs ───
@@ -25,17 +25,21 @@ const taskInput = $('#task-input') as HTMLTextAreaElement;
 const sendBtn = $('#send-btn') as HTMLButtonElement;
 const stopBtn = $('#stop-btn') as HTMLButtonElement;
 
+const recordingsBtn = $('#recordings-btn') as HTMLButtonElement;
+const recordingsPanel = $('#recordings-panel') as HTMLDivElement;
+const recordingsList = $('#recordings-list') as HTMLDivElement;
+
 // ─── Settings UI ───
 
 settingsBtn.addEventListener('click', () => {
   settingsPanel.classList.toggle('hidden');
+  recordingsPanel.classList.add('hidden');
 });
 
 providerSelect.addEventListener('change', () => {
   const needsBaseUrl = ['ollama', 'custom'].includes(providerSelect.value);
   baseUrlField.classList.toggle('hidden', !needsBaseUrl);
 
-  // Update model placeholder
   const placeholders: Record<string, string> = {
     anthropic: 'claude-sonnet-4-20250514',
     openai: 'gpt-4o',
@@ -65,7 +69,6 @@ saveSettingsBtn.addEventListener('click', async () => {
   addMessage('system', 'Settings saved ✓');
 });
 
-// Load existing settings
 async function loadSettings() {
   const settings = await chrome.runtime.sendMessage({ type: 'GET_SETTINGS' });
   if (settings?.llm) {
@@ -77,6 +80,73 @@ async function loadSettings() {
   }
 }
 loadSettings();
+
+// ─── Recordings UI ───
+
+recordingsBtn.addEventListener('click', () => {
+  recordingsPanel.classList.toggle('hidden');
+  settingsPanel.classList.add('hidden');
+  if (!recordingsPanel.classList.contains('hidden')) {
+    loadRecordings();
+  }
+});
+
+async function loadRecordings() {
+  const recordings = await chrome.runtime.sendMessage({ type: 'LIST_RECORDINGS' });
+  recordingsList.innerHTML = '';
+
+  if (!recordings || recordings.length === 0) {
+    recordingsList.innerHTML = '<p class="empty-state">No recordings yet. Complete a task to create one.</p>';
+    return;
+  }
+
+  for (const rec of recordings) {
+    const successSteps = rec.steps.filter((s: any) => s.success).length;
+    const date = new Date(rec.createdAt);
+    const timeStr = date.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+    const div = document.createElement('div');
+    div.className = 'recording-item';
+    div.innerHTML = `
+      <div class="recording-info">
+        <span class="recording-task">${escapeHtml(rec.task.slice(0, 60))}${rec.task.length > 60 ? '…' : ''}</span>
+        <span class="recording-meta">${timeStr} · ${successSteps} steps · ${formatDuration(rec.duration)}</span>
+      </div>
+      <div class="recording-actions">
+        <button class="btn-sm btn-replay" data-id="${rec.id}" title="Replay">▶️</button>
+        <button class="btn-sm btn-delete" data-id="${rec.id}" title="Delete">🗑️</button>
+      </div>
+    `;
+    recordingsList.appendChild(div);
+  }
+
+  // Event delegation for recording buttons
+  recordingsList.querySelectorAll('.btn-replay').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const id = (btn as HTMLElement).dataset.id!;
+      chrome.runtime.sendMessage({ type: 'REPLAY_RECORDING', payload: { id } });
+      recordingsPanel.classList.add('hidden');
+      addMessage('system', '🔄 Replaying recorded task...');
+      setRunning(true);
+      setStatus('Replaying...');
+    });
+  });
+
+  recordingsList.querySelectorAll('.btn-delete').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const id = (btn as HTMLElement).dataset.id!;
+      await chrome.runtime.sendMessage({ type: 'DELETE_RECORDING', payload: { id } });
+      loadRecordings();
+    });
+  });
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  const secs = Math.round(ms / 1000);
+  if (secs < 60) return `${secs}s`;
+  return `${Math.floor(secs / 60)}m ${secs % 60}s`;
+}
 
 // ─── Chat UI ───
 
@@ -172,6 +242,19 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'TASK_STOPPED':
       addMessage('system', 'Task stopped.');
       setRunning(false);
+      break;
+
+    case 'REPLAY_STARTED':
+      setStatus(`Replaying: ${payload.task}`);
+      break;
+
+    case 'REPLAY_COMPLETE':
+      addMessage('assistant', `✅ Replay complete: ${payload.task}`);
+      setRunning(false);
+      break;
+
+    case 'RECORDING_SAVED':
+      addMessage('system', `📹 Recorded ${payload.stepCount} steps. View in Recordings.`);
       break;
 
     case 'ERROR':

@@ -103,8 +103,96 @@ body {
   border-color: #3b82f6;
 }
 
+.header-actions {
+  display: flex;
+  gap: 2px;
+}
+
 .hidden {
   display: none !important;
+}
+
+/* ─── Recordings ─── */
+
+.recordings-panel {
+  padding: 14px;
+  border-bottom: 1px solid #27272a;
+  background: #0f0f11;
+  flex-shrink: 0;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.recordings-panel h2 {
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 10px;
+  color: #a1a1aa;
+}
+
+.recording-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  border-radius: 6px;
+  margin-bottom: 4px;
+  background: #18181b;
+  border: 1px solid #27272a;
+}
+
+.recording-item:hover {
+  border-color: #3f3f46;
+}
+
+.recording-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.recording-task {
+  font-size: 12px;
+  font-weight: 500;
+  color: #e4e4e7;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-meta {
+  font-size: 10px;
+  color: #71717a;
+}
+
+.recording-actions {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+
+.btn-sm {
+  background: none;
+  border: 1px solid #27272a;
+  border-radius: 4px;
+  padding: 2px 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.btn-sm:hover {
+  background: #27272a;
+}
+
+.empty-state {
+  color: #52525b;
+  font-size: 12px;
+  text-align: center;
+  padding: 16px 0;
 }
 
 /* ─── Chat ─── */

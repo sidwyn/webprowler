@@ -3,9 +3,15 @@
  * Bridges the side panel UI ↔ content scripts ↔ LLM planner.
  */
 
-import type { Action, LLMConfig, PageSnapshot, Settings, DEFAULT_SETTINGS } from '../types';
+import type { Action, PageSnapshot, Settings } from '../types';
 import { createProvider, type LLMProvider } from '../lib/llm/provider';
 import { runPlanner, type PlannerCallbacks } from '../lib/planner';
+import {
+  startRecording, recordStep, stopRecording,
+  listRecordings, getRecordingById, deleteRecording, clearRecordings,
+  replayRecording,
+  type ReplayCallbacks, type Recording,
+} from '../lib/recorder';
 
 // ─── State ───
 
@@ -21,7 +27,6 @@ async function loadSettings(): Promise<Settings> {
   if (stored.settings) {
     currentSettings = stored.settings as Settings;
   } else {
-    // Import default at runtime to avoid circular deps
     currentSettings = {
       llm: {
         provider: 'anthropic',
@@ -49,6 +54,11 @@ async function getActiveTabId(): Promise<number> {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) throw new Error('No active tab found');
   return tab.id;
+}
+
+async function getActiveTabUrl(): Promise<string> {
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tab?.url ?? '';
 }
 
 async function sendToTab<T>(tabId: number, type: string, payload?: unknown): Promise<T> {
@@ -104,6 +114,10 @@ async function runTask(task: string) {
 
   try {
     const tabId = await getActiveTabId();
+    const startUrl = await getActiveTabUrl();
+
+    // Start recording
+    startRecording(task, startUrl);
 
     const callbacks: PlannerCallbacks = {
       async getSnapshot() {
@@ -111,7 +125,11 @@ async function runTask(task: string) {
       },
 
       async executeAction(action: Action) {
-        return executeActionOnTab(tabId, action);
+        const result = await executeActionOnTab(tabId, action);
+        // Record the step
+        const url = await getActiveTabUrl();
+        recordStep(action, url, result);
+        return result;
       },
 
       onPlan(plan) {
@@ -153,13 +171,83 @@ async function runTask(task: string) {
     };
 
     await runPlanner(task, llmProvider, callbacks);
+
+    // Stop recording and save
+    const recording = await stopRecording();
+    if (recording) {
+      broadcastToSidePanel('RECORDING_SAVED', {
+        id: recording.id,
+        task: recording.task,
+        stepCount: recording.steps.filter(s => s.success).length,
+      });
+    }
   } catch (error) {
+    await stopRecording();
     broadcastToSidePanel('ERROR', {
       message: error instanceof Error ? error.message : String(error),
     });
   } finally {
     isRunning = false;
     abortController = null;
+  }
+}
+
+// ─── Replay ───
+
+async function runReplay(recordingId: string) {
+  if (isRunning) {
+    broadcastToSidePanel('ERROR', { message: 'Already running a task' });
+    return;
+  }
+
+  const recording = await getRecordingById(recordingId);
+  if (!recording) {
+    broadcastToSidePanel('ERROR', { message: 'Recording not found' });
+    return;
+  }
+
+  isRunning = true;
+  broadcastToSidePanel('REPLAY_STARTED', { task: recording.task, id: recording.id });
+
+  try {
+    const tabId = await getActiveTabId();
+
+    const callbacks: ReplayCallbacks = {
+      async executeAction(action: Action) {
+        return executeActionOnTab(tabId, action);
+      },
+
+      onStepStart(step, index) {
+        broadcastToSidePanel('STEP_START', {
+          index,
+          description: describeActionBrief(step.action),
+        });
+      },
+
+      onStepComplete(step, result) {
+        broadcastToSidePanel('STEP_COMPLETE', {
+          description: describeActionBrief(step.action),
+          success: result.success,
+          error: result.error,
+        });
+      },
+
+      onComplete() {
+        broadcastToSidePanel('REPLAY_COMPLETE', { task: recording.task });
+      },
+
+      onError(error) {
+        broadcastToSidePanel('ERROR', { message: error });
+      },
+    };
+
+    await replayRecording(recording, callbacks);
+  } catch (error) {
+    broadcastToSidePanel('ERROR', {
+      message: error instanceof Error ? error.message : String(error),
+    });
+  } finally {
+    isRunning = false;
   }
 }
 
@@ -189,6 +277,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case 'STOP_TASK':
       if (abortController) abortController.abort();
       isRunning = false;
+      stopRecording();
       broadcastToSidePanel('TASK_STOPPED', {});
       sendResponse({ ok: true });
       return false;
@@ -203,6 +292,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case 'GET_STATUS':
       sendResponse({ isRunning });
+      return false;
+
+    // ─── Recording endpoints ───
+
+    case 'LIST_RECORDINGS':
+      listRecordings().then(recordings => sendResponse(recordings));
+      return true;
+
+    case 'DELETE_RECORDING':
+      deleteRecording(payload.id).then(() => sendResponse({ ok: true }));
+      return true;
+
+    case 'CLEAR_RECORDINGS':
+      clearRecordings().then(() => sendResponse({ ok: true }));
+      return true;
+
+    case 'REPLAY_RECORDING':
+      runReplay(payload.id);
+      sendResponse({ ok: true });
       return false;
   }
 });

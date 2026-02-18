@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebProwler</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app">
+    <!-- Header -->
+    <header class="header">
+      <h1>🐾 WebProwler</h1>
+      <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
+    </header>
+
+    <!-- Settings Panel (hidden by default) -->
+    <div id="settings-panel" class="settings hidden">
+      <h2>Settings</h2>
+      <label class="field">
+        <span>Provider</span>
+        <select id="llm-provider">
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Google Gemini</option>
+          <option value="ollama">Ollama (local)</option>
+          <option value="custom">Custom (OpenAI-compatible)</option>
+        </select>
+      </label>
+      <label class="field">
+        <span>API Key</span>
+        <input type="password" id="api-key" placeholder="sk-..." />
+      </label>
+      <label class="field">
+        <span>Model</span>
+        <input type="text" id="model-name" placeholder="claude-sonnet-4-20250514" />
+      </label>
+      <label class="field" id="base-url-field">
+        <span>Base URL (optional)</span>
+        <input type="text" id="base-url" placeholder="https://api.openai.com/v1" />
+      </label>
+      <button id="save-settings" class="btn btn-primary">Save</button>
+    </div>
+
+    <!-- Chat area -->
+    <div id="chat" class="chat">
+      <div id="messages" class="messages">
+        <div class="message system">
+          <p>Ready. Type a task and I'll navigate the current page for you.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Status bar -->
+    <div id="status-bar" class="status-bar hidden">
+      <span id="status-text"></span>
+      <span id="token-count" class="token-count"></span>
+    </div>
+
+    <!-- Input -->
+    <div class="input-area">
+      <textarea id="task-input" placeholder="e.g. Search for 'web agent' and click the first result" rows="2"></textarea>
+      <div class="input-actions">
+        <button id="send-btn" class="btn btn-primary">Send</button>
+        <button id="stop-btn" class="btn btn-danger hidden">Stop</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

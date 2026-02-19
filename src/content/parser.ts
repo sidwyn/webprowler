@@ -2,6 +2,11 @@
  * Accessibility tree parser.
  * Runs inside the content script context (has full DOM access).
  * Produces a compact text representation of the page for LLM consumption.
+ *
+ * Supports:
+ * - Standard DOM elements
+ * - Shadow DOM (open shadow roots)
+ * - Same-origin iframes
  */
 
 import type { PageNode, PageSnapshot } from '../types';
@@ -66,6 +71,7 @@ const SKIP_TAGS = new Set([
   'script', 'style', 'noscript', 'meta', 'link', 'br', 'hr', 'svg', 'path',
   'defs', 'clippath', 'lineargradient', 'radialgradient', 'stop', 'symbol',
   'use', 'circle', 'rect', 'line', 'polyline', 'polygon', 'ellipse',
+  'template', 'slot',
 ]);
 
 // ─── Ref management ───
@@ -77,7 +83,6 @@ const refsByElement = new WeakMap<Element, string>();
 function getOrCreateRef(el: Element): string {
   const existing = refsByElement.get(el);
   if (existing) {
-    // Verify the WeakRef still points to this element
     const stored = elementsByRef.get(existing)?.deref();
     if (stored === el) return existing;
   }
@@ -95,18 +100,14 @@ export function resolveRef(ref: string): Element | null {
 
 function isVisible(el: Element): boolean {
   if (!(el instanceof HTMLElement)) return true;
-
-  // Quick attribute checks
   if (el.ariaHidden === 'true') return false;
   if (el.hidden) return false;
 
-  // Style checks (expensive, but necessary)
   const style = getComputedStyle(el);
   if (style.display === 'none') return false;
   if (style.visibility === 'hidden') return false;
   if (style.opacity === '0') return false;
 
-  // Size check
   const rect = el.getBoundingClientRect();
   if (rect.width === 0 && rect.height === 0) return false;
 
@@ -115,7 +116,7 @@ function isVisible(el: Element): boolean {
 
 function isInViewport(el: Element): boolean {
   const rect = el.getBoundingClientRect();
-  const margin = 100; // Include elements slightly off-screen
+  const margin = 100;
   return (
     rect.bottom > -margin &&
     rect.top < window.innerHeight + margin &&
@@ -129,10 +130,14 @@ function isInteractive(el: Element): boolean {
   if (['a', 'button', 'input', 'textarea', 'select', 'summary'].includes(tag)) return true;
   if (el.hasAttribute('onclick') || el.hasAttribute('tabindex')) return true;
   if ((el as HTMLElement).contentEditable === 'true') return true;
-  if (el.getAttribute('role') === 'button' || el.getAttribute('role') === 'link') return true;
-  // Check for cursor pointer (common for clickable divs)
-  const style = getComputedStyle(el);
-  if (style.cursor === 'pointer') return true;
+  const role = el.getAttribute('role');
+  if (role === 'button' || role === 'link' || role === 'tab' ||
+      role === 'menuitem' || role === 'option' || role === 'switch') return true;
+  // cursor: pointer check (common for clickable divs/spans)
+  try {
+    const style = getComputedStyle(el);
+    if (style.cursor === 'pointer') return true;
+  } catch { /* cross-origin iframe element */ }
   return false;
 }
 
@@ -141,43 +146,39 @@ function isInteractive(el: Element): boolean {
 function getAccessibleName(el: Element): string {
   const tag = el.tagName.toLowerCase();
 
-  // aria-label takes priority
   const ariaLabel = el.getAttribute('aria-label');
   if (ariaLabel) return ariaLabel.trim();
 
-  // aria-labelledby
   const labelledBy = el.getAttribute('aria-labelledby');
   if (labelledBy) {
+    const root = el.getRootNode() as Document | ShadowRoot;
     const parts = labelledBy.split(/\s+/).map(id => {
-      const target = document.getElementById(id);
+      const target = root.getElementById?.(id) ?? document.getElementById(id);
       return target?.textContent?.trim() ?? '';
     }).filter(Boolean);
     if (parts.length) return parts.join(' ');
   }
 
-  // Select: show selected option text
   if (tag === 'select') {
     const sel = el as HTMLSelectElement;
     return sel.options[sel.selectedIndex]?.text?.trim() ?? '';
   }
 
-  // Inputs
   if (tag === 'input' || tag === 'textarea') {
     const input = el as HTMLInputElement;
-    // Associated label
     if (input.id) {
-      const label = document.querySelector(`label[for="${CSS.escape(input.id)}"]`);
+      const root = el.getRootNode() as Document | ShadowRoot;
+      const label = (root.querySelector?.(`label[for="${CSS.escape(input.id)}"]`) ??
+                     document.querySelector(`label[for="${CSS.escape(input.id)}"]`));
       if (label?.textContent) return label.textContent.trim();
     }
     return input.placeholder || input.title || input.name || '';
   }
 
-  // Images
   if (tag === 'img') {
     return (el as HTMLImageElement).alt || el.getAttribute('title') || '';
   }
 
-  // For buttons/links/headings: direct text content (shallow)
   if (['button', 'a', 'summary', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label'].includes(tag)) {
     return getShallowText(el).trim();
   }
@@ -192,8 +193,7 @@ function getShallowText(el: Element): string {
       text += child.textContent ?? '';
     } else if (child.nodeType === Node.ELEMENT_NODE) {
       const childTag = (child as Element).tagName.toLowerCase();
-      // Include inline elements' text, skip block-level
-      if (['span', 'strong', 'em', 'b', 'i', 'small', 'code', 'mark'].includes(childTag)) {
+      if (['span', 'strong', 'em', 'b', 'i', 'small', 'code', 'mark', 'u', 'sub', 'sup'].includes(childTag)) {
         text += child.textContent ?? '';
       }
     }
@@ -204,13 +204,11 @@ function getShallowText(el: Element): string {
 // ─── Role resolution ───
 
 function getRole(el: Element): string {
-  // Explicit ARIA role
   const explicit = el.getAttribute('role');
   if (explicit) return explicit;
 
   const tag = el.tagName.toLowerCase();
 
-  // Input type specialization
   if (tag === 'input') {
     const type = (el as HTMLInputElement).type || 'text';
     return INPUT_TYPE_ROLES[type] ?? 'textbox';
@@ -246,52 +244,103 @@ function getProps(el: Element): Record<string, string> {
     if (sel.value) props.value = sel.value;
   }
 
-  if (el.getAttribute('aria-expanded')) {
-    props.expanded = el.getAttribute('aria-expanded')!;
-  }
-  if (el.getAttribute('aria-selected')) {
-    props.selected = el.getAttribute('aria-selected')!;
-  }
-  if (el.getAttribute('aria-disabled') === 'true') {
-    props.disabled = 'true';
-  }
+  if (el.getAttribute('aria-expanded')) props.expanded = el.getAttribute('aria-expanded')!;
+  if (el.getAttribute('aria-selected')) props.selected = el.getAttribute('aria-selected')!;
+  if (el.getAttribute('aria-disabled') === 'true') props.disabled = 'true';
+  if (el.getAttribute('aria-current')) props.current = el.getAttribute('aria-current')!;
 
   return props;
 }
 
-// ─── Tree building ───
+// ─── Tree building (with shadow DOM + iframe support) ───
 
-function buildNode(el: Element, depth: number, maxDepth: number): PageNode | null {
+function getChildElements(el: Element): Element[] {
+  const children: Element[] = [];
+
+  // 1. Shadow DOM — if the element has an open shadow root, traverse it
+  if (el.shadowRoot) {
+    for (const child of el.shadowRoot.children) {
+      children.push(child);
+    }
+    return children; // Shadow root replaces light DOM children for rendering
+  }
+
+  // 2. Regular children
+  for (const child of el.children) {
+    children.push(child);
+  }
+
+  return children;
+}
+
+function buildNode(el: Element, depth: number, maxDepth: number, viewportOnly: boolean): PageNode | null {
   const tag = el.tagName.toLowerCase();
   if (SKIP_TAGS.has(tag)) return null;
   if (!isVisible(el)) return null;
   if (depth > maxDepth) return null;
+  if (viewportOnly && !isInViewport(el)) return null;
+
+  // 3. Iframes — try to access same-origin iframe content
+  if (tag === 'iframe') {
+    try {
+      const iframe = el as HTMLIFrameElement;
+      const iframeDoc = iframe.contentDocument;
+      if (iframeDoc?.body) {
+        const iframeNode = buildNode(iframeDoc.body, depth + 1, maxDepth, viewportOnly);
+        if (iframeNode) {
+          const ref = getOrCreateRef(el);
+          return {
+            ref,
+            role: 'iframe',
+            name: iframe.title || iframe.name || '',
+            tag: 'iframe',
+            props: iframe.src ? { src: iframe.src } : {},
+            interactive: false,
+            depth,
+            children: iframeNode.children,
+          };
+        }
+      }
+    } catch {
+      // Cross-origin iframe — can't access, just note it exists
+      const ref = getOrCreateRef(el);
+      return {
+        ref,
+        role: 'iframe',
+        name: (el as HTMLIFrameElement).title || '(cross-origin)',
+        tag: 'iframe',
+        props: {},
+        interactive: false,
+        depth,
+        children: [],
+      };
+    }
+    return null;
+  }
 
   const role = getRole(el);
   const interactive = isInteractive(el);
   const name = getAccessibleName(el);
   const props = getProps(el);
 
-  // Build children
+  // Build children (handles shadow DOM)
   const children: PageNode[] = [];
-  for (const child of el.children) {
-    const childNode = buildNode(child, depth + 1, maxDepth);
+  for (const child of getChildElements(el)) {
+    const childNode = buildNode(child, depth + 1, maxDepth, viewportOnly);
     if (childNode) children.push(childNode);
   }
 
-  // Prune: skip non-semantic containers with only one child (div > div > button → button)
+  // Prune: skip non-semantic containers with only one child
   if (!role && !interactive && !name && children.length === 1) {
     return children[0];
   }
 
-  // Prune: skip empty non-interactive non-semantic nodes with no children
+  // Prune: skip empty non-interactive non-semantic leaf nodes
   if (!role && !interactive && !name && children.length === 0) {
-    // Check for meaningful text content
     const text = getShallowText(el);
     if (!text) return null;
   }
 
-  // Only assign refs to elements we might interact with or need to reference
   const ref = (interactive || role) ? getOrCreateRef(el) : '';
 
   return { ref, role, name, tag, props, interactive, depth, children };
@@ -305,29 +354,28 @@ function serializeNode(node: PageNode, indent: number, lines: string[], maxChars
   const parts: string[] = [];
   const pad = '  '.repeat(indent);
 
-  // Role or tag
   parts.push(node.role || node.tag);
 
-  // Name in quotes
   if (node.name) {
-    parts.push(`"${node.name}"`);
+    // Truncate very long names (e.g., paragraph text used as name)
+    const displayName = node.name.length > 80 ? node.name.slice(0, 77) + '…' : node.name;
+    parts.push(`"${displayName}"`);
   }
 
-  // Ref
   if (node.ref) {
     parts.push(`[${node.ref}]`);
   }
 
-  // Key props inline
   for (const [k, v] of Object.entries(node.props)) {
-    parts.push(`${k}=${v}`);
+    // Truncate long prop values
+    const displayVal = v.length > 60 ? v.slice(0, 57) + '…' : v;
+    parts.push(`${k}=${displayVal}`);
   }
 
   const line = `${pad}${parts.join(' ')}`;
   charCount.count += line.length + 1;
   lines.push(line);
 
-  // Recurse children
   for (const child of node.children) {
     serializeNode(child, indent + 1, lines, maxChars, charCount);
   }
@@ -336,13 +384,9 @@ function serializeNode(node: PageNode, indent: number, lines: string[], maxChars
 // ─── Public API ───
 
 export interface SnapshotOptions {
-  /** 'all' includes everything visible, 'interactive' only interactive elements */
   filter?: 'all' | 'interactive';
-  /** Max tree depth */
   maxDepth?: number;
-  /** Max output chars */
   maxChars?: number;
-  /** Only include elements in the viewport */
   viewportOnly?: boolean;
 }
 
@@ -354,11 +398,12 @@ export function takeSnapshot(options: SnapshotOptions = {}): PageSnapshot {
     viewportOnly = true,
   } = options;
 
+  // Reset refs for fresh snapshot
   refCounter = 0;
   elementsByRef.clear();
 
   const root = document.body ?? document.documentElement;
-  const tree = buildNode(root, 0, maxDepth);
+  const tree = buildNode(root, 0, maxDepth, viewportOnly);
 
   if (!tree) {
     return {
@@ -370,31 +415,19 @@ export function takeSnapshot(options: SnapshotOptions = {}): PageSnapshot {
     };
   }
 
-  // Filter and serialize
+  // Serialize
   const lines: string[] = [];
   const charCount = { count: 0 };
-  let interactiveCount = 0;
 
-  function walk(node: PageNode) {
-    if (viewportOnly && node.ref) {
-      const el = resolveRef(node.ref);
-      if (el && !isInViewport(el)) return;
-    }
-
-    if (filter === 'interactive' && !node.interactive && node.children.length === 0) {
-      return;
-    }
-
-    if (node.interactive) interactiveCount++;
-
-    serializeNode(node, 0, lines, maxChars, charCount);
-    // Children are handled by serializeNode recursively
+  if (filter === 'interactive') {
+    // Only serialize interactive subtrees
+    serializeInteractive(tree, 0, lines, maxChars, charCount);
+  } else {
+    serializeNode(tree, 0, lines, maxChars, charCount);
   }
 
-  // Serialize top-level (serializeNode handles recursion)
-  serializeNode(tree, 0, lines, maxChars, charCount);
-
   // Count interactive elements
+  let interactiveCount = 0;
   function countInteractive(node: PageNode) {
     if (node.interactive) interactiveCount++;
     for (const child of node.children) countInteractive(child);
@@ -408,4 +441,39 @@ export function takeSnapshot(options: SnapshotOptions = {}): PageSnapshot {
     interactiveCount,
     timestamp: Date.now(),
   };
+}
+
+/** Serialize only branches that contain interactive elements */
+function serializeInteractive(node: PageNode, indent: number, lines: string[], maxChars: number, charCount: { count: number }): void {
+  if (charCount.count >= maxChars) return;
+
+  const hasInteractive = nodeHasInteractive(node);
+  if (!hasInteractive) return;
+
+  // Serialize this node
+  const parts: string[] = [];
+  const pad = '  '.repeat(indent);
+  parts.push(node.role || node.tag);
+  if (node.name) {
+    const displayName = node.name.length > 80 ? node.name.slice(0, 77) + '…' : node.name;
+    parts.push(`"${displayName}"`);
+  }
+  if (node.ref) parts.push(`[${node.ref}]`);
+  for (const [k, v] of Object.entries(node.props)) {
+    const displayVal = v.length > 60 ? v.slice(0, 57) + '…' : v;
+    parts.push(`${k}=${displayVal}`);
+  }
+
+  const line = `${pad}${parts.join(' ')}`;
+  charCount.count += line.length + 1;
+  lines.push(line);
+
+  for (const child of node.children) {
+    serializeInteractive(child, indent + 1, lines, maxChars, charCount);
+  }
+}
+
+function nodeHasInteractive(node: PageNode): boolean {
+  if (node.interactive) return true;
+  return node.children.some(c => nodeHasInteractive(c));
 }

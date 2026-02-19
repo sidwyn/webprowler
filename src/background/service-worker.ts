@@ -12,6 +12,7 @@ import {
   replayRecording,
   type ReplayCallbacks, type Recording,
 } from '../lib/recorder';
+import { ensureContentScript, waitForTabReady } from './tab-manager';
 
 // ─── State ───
 
@@ -62,6 +63,9 @@ async function getActiveTabUrl(): Promise<string> {
 }
 
 async function sendToTab<T>(tabId: number, type: string, payload?: unknown): Promise<T> {
+  // Ensure content script is alive before sending
+  await ensureContentScript(tabId);
+
   const response = await chrome.tabs.sendMessage(tabId, { type, payload });
   if (response?.success === false) {
     throw new Error(response.error || 'Content script error');
@@ -79,7 +83,21 @@ async function getSnapshot(tabId: number): Promise<PageSnapshot> {
 }
 
 async function executeActionOnTab(tabId: number, action: Action): Promise<any> {
-  return sendToTab(tabId, 'EXECUTE_ACTION', action);
+  const result = await sendToTab(tabId, 'EXECUTE_ACTION', action);
+
+  // After navigation actions, wait for the new page to be ready
+  if (action.kind === 'navigate' || action.kind === 'click') {
+    // Give a moment for navigation to start
+    await new Promise(resolve => setTimeout(resolve, 300));
+
+    // Check if the tab is navigating
+    const tab = await chrome.tabs.get(tabId);
+    if (tab.status === 'loading') {
+      await waitForTabReady(tabId);
+    }
+  }
+
+  return result;
 }
 
 // ─── Side panel communication ───

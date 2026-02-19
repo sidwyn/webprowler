@@ -9,6 +9,11 @@
  *    - If step doesn't need verification: execute and continue
  *    - If step fails: stop, re-snapshot, ask LLM to replan
  * 4. Repeat until LLM returns empty steps (task complete) or max iterations
+ *
+ * Resilience:
+ * - Retries malformed JSON up to 2 times with corrective prompts
+ * - Retries API errors (429, 500+) with exponential backoff
+ * - Smart context trimming preserves original task + recent state
  */
 
 import type { LLMMessage, Plan, PlannedStep, PageSnapshot, StepResult, Action } from '../../types';
@@ -16,41 +21,168 @@ import type { LLMProvider } from '../llm/provider';
 import { SYSTEM_PROMPT, buildUserMessage, buildVerificationMessage } from '../llm/prompts';
 
 export interface PlannerCallbacks {
-  /** Get a snapshot of the current page */
   getSnapshot(): Promise<PageSnapshot>;
-  /** Execute an action on the page */
   executeAction(action: Action): Promise<StepResult>;
-  /** Called when the planner produces a new plan */
   onPlan(plan: Plan): void;
-  /** Called when a step starts executing */
   onStepStart(step: PlannedStep, index: number): void;
-  /** Called when a step completes */
   onStepComplete(step: PlannedStep, result: StepResult): void;
-  /** Called when the task is complete */
   onComplete(reasoning: string): void;
-  /** Called on error */
   onError(error: string): void;
-  /** Called with token usage info */
   onUsage(inputTokens: number, outputTokens: number): void;
 }
 
 const MAX_ITERATIONS = 15;
+const MAX_JSON_RETRIES = 2;
+const MAX_API_RETRIES = 3;
+
+// ─── JSON parsing with recovery ───
 
 function parsePlan(raw: string): Plan {
-  // Strip markdown code fences if present
   let cleaned = raw.trim();
+
+  // Strip markdown code fences
   if (cleaned.startsWith('```')) {
     cleaned = cleaned.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
   }
 
-  const parsed = JSON.parse(cleaned);
+  // Try to extract JSON from mixed content (LLM sometimes adds text around it)
+  if (!cleaned.startsWith('{')) {
+    const jsonMatch = cleaned.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      cleaned = jsonMatch[0];
+    }
+  }
 
-  if (!parsed.reasoning || !Array.isArray(parsed.steps)) {
-    throw new Error('Invalid plan format: missing "reasoning" or "steps"');
+  let parsed: any;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    // Try fixing common issues: trailing commas, single quotes
+    cleaned = cleaned
+      .replace(/,\s*([}\]])/g, '$1')  // trailing commas
+      .replace(/'/g, '"');             // single quotes
+    parsed = JSON.parse(cleaned); // let it throw if still broken
+  }
+
+  if (!parsed.reasoning || typeof parsed.reasoning !== 'string') {
+    throw new Error('Missing "reasoning" string in plan');
+  }
+
+  if (!Array.isArray(parsed.steps)) {
+    throw new Error('Missing "steps" array in plan');
+  }
+
+  // Validate each step has a valid action
+  for (const step of parsed.steps) {
+    if (!step.action?.kind) {
+      throw new Error(`Invalid step: missing action.kind`);
+    }
+    const validKinds = ['click', 'type', 'select', 'scroll', 'navigate', 'read', 'wait'];
+    if (!validKinds.includes(step.action.kind)) {
+      throw new Error(`Invalid action kind: ${step.action.kind}`);
+    }
+    // Default needsVerification
+    if (typeof step.needsVerification !== 'boolean') {
+      step.needsVerification = actionNeedsVerification(step.action);
+    }
   }
 
   return parsed as Plan;
 }
+
+// ─── API call with retries ───
+
+async function callLLMWithRetry(
+  llm: LLMProvider,
+  messages: LLMMessage[],
+  maxRetries: number = MAX_API_RETRIES,
+): Promise<{ content: string; usage?: { inputTokens: number; outputTokens: number } }> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await llm.chat(messages);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+
+      // Check if retryable (rate limit or server error)
+      const msg = lastError.message;
+      const isRetryable = msg.includes('429') || msg.includes('500') ||
+        msg.includes('502') || msg.includes('503') || msg.includes('529') ||
+        msg.includes('overloaded') || msg.includes('rate');
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw lastError;
+      }
+
+      // Exponential backoff: 1s, 2s, 4s
+      const delayMs = 1000 * Math.pow(2, attempt);
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+    }
+  }
+
+  throw lastError!;
+}
+
+// ─── Get plan with JSON retry ───
+
+async function getPlanFromLLM(
+  llm: LLMProvider,
+  conversationHistory: LLMMessage[],
+  onUsage: (input: number, output: number) => void,
+  totalUsage: { input: number; output: number },
+): Promise<{ plan: Plan; rawResponse: string }> {
+  let lastParseError: string | null = null;
+
+  for (let jsonAttempt = 0; jsonAttempt <= MAX_JSON_RETRIES; jsonAttempt++) {
+    // If previous attempt had a parse error, add a corrective message
+    if (lastParseError && jsonAttempt > 0) {
+      conversationHistory.push({
+        role: 'user',
+        content: `Your previous response was not valid JSON. Error: ${lastParseError}\n\nRespond with ONLY a JSON object like: {"reasoning": "...", "steps": [...]}. No text before or after the JSON.`,
+      });
+    }
+
+    const response = await callLLMWithRetry(llm, conversationHistory);
+
+    if (response.usage) {
+      totalUsage.input += response.usage.inputTokens;
+      totalUsage.output += response.usage.outputTokens;
+      onUsage(totalUsage.input, totalUsage.output);
+    }
+
+    try {
+      const plan = parsePlan(response.content);
+
+      // Success — add the response to history
+      // If we had corrective messages, remove them first
+      if (jsonAttempt > 0) {
+        // Remove the corrective prompt we added
+        while (conversationHistory.length > 1 &&
+          conversationHistory[conversationHistory.length - 1].role === 'user' &&
+          conversationHistory[conversationHistory.length - 1].content.includes('not valid JSON')) {
+          conversationHistory.pop();
+        }
+      }
+
+      conversationHistory.push({ role: 'assistant', content: response.content });
+      return { plan, rawResponse: response.content };
+    } catch (parseError) {
+      lastParseError = parseError instanceof Error ? parseError.message : String(parseError);
+
+      // Add the bad response so the LLM can see what it said
+      conversationHistory.push({ role: 'assistant', content: response.content });
+
+      if (jsonAttempt === MAX_JSON_RETRIES) {
+        throw new Error(`LLM returned invalid JSON after ${MAX_JSON_RETRIES + 1} attempts. Last error: ${lastParseError}`);
+      }
+    }
+  }
+
+  throw new Error('Unreachable');
+}
+
+// ─── Helpers ───
 
 function describeAction(action: Action): string {
   switch (action.kind) {
@@ -64,18 +196,41 @@ function describeAction(action: Action): string {
   }
 }
 
-/** Classify whether an action inherently requires verification */
 function actionNeedsVerification(action: Action): boolean {
   switch (action.kind) {
-    case 'click': return true;   // Clicks can trigger navigation, modals, state changes
+    case 'click': return true;
     case 'navigate': return true;
-    case 'scroll': return true;  // New content may load
-    case 'type': return false;   // Typing is generally safe to chain
+    case 'scroll': return true;
+    case 'type': return false;
     case 'select': return false;
     case 'read': return false;
     case 'wait': return false;
   }
 }
+
+function formatSnapshot(snapshot: PageSnapshot): string {
+  return `URL: ${snapshot.url}\nTitle: ${snapshot.title}\nInteractive elements: ${snapshot.interactiveCount}\n\n${snapshot.tree}`;
+}
+
+/**
+ * Smart context trimming.
+ * Keeps: system prompt + first user message (original task) + most recent messages.
+ * This ensures the LLM always knows what the original task is.
+ */
+function trimConversation(history: LLMMessage[], maxMessages: number = 14): void {
+  if (history.length <= maxMessages) return;
+
+  // history[0] = system, history[1] = first user message (the task)
+  // Keep those two + the most recent (maxMessages - 2) messages
+  const keepFromEnd = maxMessages - 2;
+  const recentStart = history.length - keepFromEnd;
+
+  if (recentStart <= 2) return; // Already short enough
+
+  history.splice(2, recentStart - 2);
+}
+
+// ─── Main planner loop ───
 
 export async function runPlanner(
   task: string,
@@ -86,13 +241,26 @@ export async function runPlanner(
     { role: 'system', content: SYSTEM_PROMPT },
   ];
 
-  let totalInput = 0;
-  let totalOutput = 0;
+  const totalUsage = { input: 0, output: 0 };
 
   for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
     // 1. Get current page state
-    const snapshot = await callbacks.getSnapshot();
-    const snapshotText = `URL: ${snapshot.url}\nTitle: ${snapshot.title}\nInteractive elements: ${snapshot.interactiveCount}\n\n${snapshot.tree}`;
+    let snapshot: PageSnapshot;
+    try {
+      snapshot = await callbacks.getSnapshot();
+    } catch (error) {
+      // Content script may not be injected yet (e.g. after navigation)
+      // Wait and retry once
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      try {
+        snapshot = await callbacks.getSnapshot();
+      } catch (retryError) {
+        callbacks.onError(`Cannot read page: ${retryError}. The content script may not be loaded on this page.`);
+        return;
+      }
+    }
+
+    const snapshotText = formatSnapshot(snapshot);
 
     // 2. Build message
     if (iteration === 0) {
@@ -101,24 +269,19 @@ export async function runPlanner(
         content: buildUserMessage(task, snapshotText),
       });
     }
-    // For subsequent iterations, the verification message was already added
 
-    // 3. Ask LLM for a plan
+    // 3. Get plan with JSON retry
     let plan: Plan;
     try {
-      const response = await llm.chat(conversationHistory);
-
-      if (response.usage) {
-        totalInput += response.usage.inputTokens;
-        totalOutput += response.usage.outputTokens;
-        callbacks.onUsage(totalInput, totalOutput);
-      }
-
-      conversationHistory.push({ role: 'assistant', content: response.content });
-
-      plan = parsePlan(response.content);
+      const result = await getPlanFromLLM(
+        llm,
+        conversationHistory,
+        callbacks.onUsage,
+        totalUsage,
+      );
+      plan = result.plan;
     } catch (error) {
-      callbacks.onError(`Failed to get plan from LLM: ${error}`);
+      callbacks.onError(`Failed to get plan: ${error instanceof Error ? error.message : error}`);
       return;
     }
 
@@ -135,8 +298,6 @@ export async function runPlanner(
 
     for (let i = 0; i < plan.steps.length; i++) {
       const step = plan.steps[i];
-
-      // Force verification for inherently risky actions
       const shouldVerify = step.needsVerification || actionNeedsVerification(step.action);
 
       callbacks.onStepStart(step, i);
@@ -145,50 +306,77 @@ export async function runPlanner(
       callbacks.onStepComplete(step, result);
 
       if (!result.success) {
-        // Step failed — feed error back to LLM and replan
-        const errorSnapshot = await callbacks.getSnapshot();
-        const errorSnapshotText = `URL: ${errorSnapshot.url}\nTitle: ${errorSnapshot.title}\nInteractive elements: ${errorSnapshot.interactiveCount}\n\n${errorSnapshot.tree}`;
+        // Wait a moment then get fresh snapshot for error recovery
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        let errorSnapshot: PageSnapshot;
+        try {
+          errorSnapshot = await callbacks.getSnapshot();
+        } catch {
+          // If snapshot fails after error, provide minimal context
+          errorSnapshot = { url: 'unknown', title: 'unknown', tree: '(unable to read page)', interactiveCount: 0, timestamp: Date.now() };
+        }
 
         conversationHistory.push({
           role: 'user',
-          content: `## Error\nAction failed: ${result.error}\n\n${buildVerificationMessage(describeAction(step.action), errorSnapshotText)}`,
+          content: `## Error\nAction failed: ${result.error}\n\n${buildVerificationMessage(describeAction(step.action), formatSnapshot(errorSnapshot))}`,
         });
         needsReplan = true;
         break;
       }
 
-      // Verify if needed (and not the last step — next iteration will snapshot anyway)
+      // Verify after risky actions (but not if it's the last step — next iteration handles it)
       if (shouldVerify && i < plan.steps.length - 1) {
-        const verifySnapshot = await callbacks.getSnapshot();
-        const verifyText = `URL: ${verifySnapshot.url}\nTitle: ${verifySnapshot.title}\nInteractive elements: ${verifySnapshot.interactiveCount}\n\n${verifySnapshot.tree}`;
+        // Wait for navigation/DOM to settle
+        await new Promise(resolve => setTimeout(resolve, 500));
+
+        let verifySnapshot: PageSnapshot;
+        try {
+          verifySnapshot = await callbacks.getSnapshot();
+        } catch {
+          // Snapshot failed — page probably navigated, retry after delay
+          await new Promise(resolve => setTimeout(resolve, 1500));
+          try {
+            verifySnapshot = await callbacks.getSnapshot();
+          } catch {
+            verifySnapshot = { url: 'unknown', title: 'unknown', tree: '(page is loading or unreachable)', interactiveCount: 0, timestamp: Date.now() };
+          }
+        }
 
         conversationHistory.push({
           role: 'user',
-          content: buildVerificationMessage(describeAction(step.action), verifyText),
+          content: buildVerificationMessage(describeAction(step.action), formatSnapshot(verifySnapshot)),
         });
         needsReplan = true;
-        break; // Go back to LLM for updated plan
+        break;
       }
     }
 
-    // If all steps executed without needing replan, add a verification for the next iteration
+    // All steps completed without mid-plan replan — verify final state
     if (!needsReplan) {
-      const finalSnapshot = await callbacks.getSnapshot();
-      const finalText = `URL: ${finalSnapshot.url}\nTitle: ${finalSnapshot.title}\nInteractive elements: ${finalSnapshot.interactiveCount}\n\n${finalSnapshot.tree}`;
+      await new Promise(resolve => setTimeout(resolve, 500));
+
+      let finalSnapshot: PageSnapshot;
+      try {
+        finalSnapshot = await callbacks.getSnapshot();
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, 1500));
+        try {
+          finalSnapshot = await callbacks.getSnapshot();
+        } catch {
+          finalSnapshot = { url: 'unknown', title: 'unknown', tree: '(page is loading or unreachable)', interactiveCount: 0, timestamp: Date.now() };
+        }
+      }
 
       const lastAction = plan.steps[plan.steps.length - 1];
       conversationHistory.push({
         role: 'user',
-        content: buildVerificationMessage(describeAction(lastAction.action), finalText),
+        content: buildVerificationMessage(describeAction(lastAction.action), formatSnapshot(finalSnapshot)),
       });
     }
 
-    // Trim conversation history to avoid context overflow (keep system + last 10 messages)
-    if (conversationHistory.length > 12) {
-      const system = conversationHistory[0];
-      conversationHistory.splice(1, conversationHistory.length - 11);
-      conversationHistory[0] = system;
-    }
+    // Smart context trimming
+    trimConversation(conversationHistory);
   }
 
   callbacks.onError(`Max iterations (${MAX_ITERATIONS}) reached. Task may be incomplete.`);

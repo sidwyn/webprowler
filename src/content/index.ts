@@ -20,6 +20,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   const { type, payload } = message;
 
   switch (type) {
+    case 'PING': {
+      sendResponse({ pong: true });
+      return false;
+    }
+
     case 'GET_SNAPSHOT': {
       const options = (payload ?? {}) as SnapshotOptions;
       try {

@@ -11,7 +11,8 @@ const settingsBtn = $('#settings-btn') as HTMLButtonElement;
 const settingsPanel = $('#settings-panel') as HTMLDivElement;
 const providerSelect = $('#llm-provider') as HTMLSelectElement;
 const apiKeyInput = $('#api-key') as HTMLInputElement;
-const modelInput = $('#model-name') as HTMLInputElement;
+const apiKeyLink = $('#api-key-link') as HTMLAnchorElement;
+const modelSelect = $('#model-name') as HTMLSelectElement;
 const baseUrlInput = $('#base-url') as HTMLInputElement;
 const baseUrlField = $('#base-url-field') as HTMLElement;
 const saveSettingsBtn = $('#save-settings') as HTMLButtonElement;
@@ -102,18 +103,129 @@ const PROVIDER_LABELS: Record<string, string> = {
   custom: 'Custom',
 };
 
-const MODEL_PLACEHOLDERS: Record<string, string> = {
+const PROVIDER_MODELS: Record<string, Array<{ value: string; label: string }>> = {
+  anthropic: [
+    { value: 'claude-opus-4-0626', label: 'Claude Opus 4' },
+    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+    { value: 'claude-haiku-4-20250414', label: 'Claude Haiku 4' },
+  ],
+  openai: [
+    { value: 'gpt-4o', label: 'GPT-4o' },
+    { value: 'gpt-4o-mini', label: 'GPT-4o Mini' },
+    { value: 'o3', label: 'o3' },
+    { value: 'o4-mini', label: 'o4-mini' },
+  ],
+  gemini: [
+    { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+    { value: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+  ],
+  ollama: [
+    { value: 'llama3.3', label: 'Llama 3.3' },
+    { value: 'qwen2.5', label: 'Qwen 2.5' },
+    { value: 'mistral', label: 'Mistral' },
+  ],
+  custom: [],
+};
+
+const PROVIDER_KEY_URLS: Record<string, string> = {
+  anthropic: 'https://console.anthropic.com/settings/keys',
+  openai: 'https://platform.openai.com/api-keys',
+  gemini: 'https://aistudio.google.com/apikey',
+};
+
+const DEFAULT_MODELS: Record<string, string> = {
   anthropic: 'claude-sonnet-4-20250514',
   openai: 'gpt-4o',
-  gemini: 'gemini-2.0-flash',
+  gemini: 'gemini-2.5-flash',
   ollama: 'llama3.3',
-  custom: 'model-name',
+  custom: '',
 };
+
+function populateModels(provider: string, selectedModel?: string) {
+  const models = PROVIDER_MODELS[provider] ?? [];
+  modelSelect.innerHTML = '';
+
+  if (provider === 'custom' || provider === 'ollama') {
+    // For custom/ollama, also allow free-text via a "custom" option
+    // But we still show known models for ollama
+  }
+
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.value;
+    opt.textContent = m.label;
+    modelSelect.appendChild(opt);
+  }
+
+  // Add a "Custom…" option for typing a model name
+  if (models.length > 0) {
+    const sep = document.createElement('option');
+    sep.disabled = true;
+    sep.textContent = '───────────';
+    modelSelect.appendChild(sep);
+  }
+  const customOpt = document.createElement('option');
+  customOpt.value = '__custom__';
+  customOpt.textContent = 'Custom model…';
+  modelSelect.appendChild(customOpt);
+
+  // Select the right model
+  if (selectedModel && models.some(m => m.value === selectedModel)) {
+    modelSelect.value = selectedModel;
+  } else if (selectedModel && selectedModel !== '__custom__') {
+    // It's a custom model value — add it as an option
+    const opt = document.createElement('option');
+    opt.value = selectedModel;
+    opt.textContent = selectedModel;
+    modelSelect.insertBefore(opt, modelSelect.firstChild);
+    modelSelect.value = selectedModel;
+  } else {
+    modelSelect.value = DEFAULT_MODELS[provider] ?? '';
+  }
+}
+
+function updateKeyLink(provider: string) {
+  const url = PROVIDER_KEY_URLS[provider];
+  if (url) {
+    apiKeyLink.href = url;
+    apiKeyLink.classList.remove('hidden');
+  } else {
+    apiKeyLink.classList.add('hidden');
+  }
+}
+
+// Handle "Custom model…" selection — prompt for model name
+modelSelect.addEventListener('change', () => {
+  if (modelSelect.value === '__custom__') {
+    const name = prompt('Enter model name:');
+    if (name) {
+      const opt = document.createElement('option');
+      opt.value = name;
+      opt.textContent = name;
+      modelSelect.insertBefore(opt, modelSelect.firstChild);
+      modelSelect.value = name;
+    } else {
+      // Revert to first option
+      modelSelect.selectedIndex = 0;
+    }
+  }
+});
+
+// Open key URL in a new tab when link is clicked
+apiKeyLink.addEventListener('click', (e) => {
+  e.preventDefault();
+  const url = apiKeyLink.href;
+  if (url && url !== '#') {
+    chrome.tabs.create({ url });
+  }
+});
 
 providerSelect.addEventListener('change', () => {
   const val = providerSelect.value;
   baseUrlField.classList.toggle('hidden', !['ollama', 'custom'].includes(val));
-  modelInput.placeholder = MODEL_PLACEHOLDERS[val] ?? '';
+  populateModels(val);
+  updateKeyLink(val);
 });
 
 function updateProviderBadge(provider?: string) {
@@ -130,7 +242,7 @@ saveSettingsBtn.addEventListener('click', async () => {
     llm: {
       provider: providerSelect.value,
       apiKey: apiKeyInput.value,
-      model: modelInput.value || modelInput.placeholder,
+      model: modelSelect.value === '__custom__' ? '' : modelSelect.value || DEFAULT_MODELS[providerSelect.value] || '',
       baseUrl: baseUrlInput.value || undefined,
       maxTokens: 4096,
     },
@@ -151,9 +263,10 @@ async function loadSettings() {
   if (settings?.llm) {
     providerSelect.value = settings.llm.provider;
     apiKeyInput.value = settings.llm.apiKey || '';
-    modelInput.value = settings.llm.model || '';
     baseUrlInput.value = settings.llm.baseUrl || '';
-    providerSelect.dispatchEvent(new Event('change'));
+    baseUrlField.classList.toggle('hidden', !['ollama', 'custom'].includes(settings.llm.provider));
+    populateModels(settings.llm.provider, settings.llm.model);
+    updateKeyLink(settings.llm.provider);
     updateProviderBadge(settings.llm.apiKey ? settings.llm.provider : undefined);
   }
 }

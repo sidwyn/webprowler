@@ -114,6 +114,22 @@ body {
   font-weight: 500;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.field-link {
+  font-size: 11px;
+  color: #6366f1;
+  text-decoration: none;
+  text-transform: none;
+  font-weight: 400;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.field-link:hover {
+  text-decoration: underline;
 }
 
 .field input,

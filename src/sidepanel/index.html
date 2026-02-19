@@ -32,12 +32,14 @@
         </select>
       </label>
       <label class="field">
-        <span>API Key</span>
+        <span>API Key <a id="api-key-link" href="#" target="_blank" class="field-link hidden">Get key ↗</a></span>
         <input type="password" id="api-key" placeholder="sk-..." />
       </label>
       <label class="field">
         <span>Model</span>
-        <input type="text" id="model-name" placeholder="claude-sonnet-4-20250514" />
+        <select id="model-name">
+          <option value="">Select a model…</option>
+        </select>
       </label>
       <label class="field hidden" id="base-url-field">
         <span>Base URL (optional)</span>

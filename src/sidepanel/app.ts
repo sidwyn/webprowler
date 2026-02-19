@@ -35,6 +35,53 @@ const recordingsList = $('#recordings-list') as HTMLDivElement;
 const welcomeCard = $('#welcome') as HTMLDivElement;
 const dismissWelcome = $('#dismiss-welcome') as HTMLButtonElement;
 
+// ─── Message History ───
+
+type HistoryItem =
+  | { kind: 'divider'; time: string; tabTitle?: string; timestamp: number }
+  | { kind: 'message'; type: string; text: string; timestamp: number }
+  | { kind: 'plan'; reasoning: string; steps: Array<{ description: string; needsVerification: boolean }>; timestamp: number };
+
+const HISTORY_MAX_ITEMS = 400;
+const HISTORY_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
+
+let chatHistory: HistoryItem[] = [];
+let isRestoringHistory = false;
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+function schedSave() {
+  if (saveTimer) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    const cutoff = Date.now() - HISTORY_MAX_AGE_MS;
+    const trimmed = chatHistory.filter(h => h.timestamp > cutoff).slice(-HISTORY_MAX_ITEMS);
+    chrome.storage.local.set({ chatHistory: trimmed });
+  }, 500);
+}
+
+async function restoreHistory() {
+  const data = await chrome.storage.local.get('chatHistory');
+  const items: HistoryItem[] = data.chatHistory ?? [];
+  const cutoff = Date.now() - HISTORY_MAX_AGE_MS;
+  const fresh = items.filter(h => h.timestamp > cutoff);
+  if (fresh.length === 0) return;
+
+  chatHistory = fresh;
+  isRestoringHistory = true;
+  welcomeCard?.remove();
+  for (const item of fresh) {
+    if (item.kind === 'divider') renderTaskDivider(item.time, item.tabTitle);
+    else if (item.kind === 'message') renderMessage(item.type, item.text);
+    else if (item.kind === 'plan') renderPlanGroup(item.reasoning, item.steps);
+  }
+  isRestoringHistory = false;
+  scrollToBottom();
+}
+
+// ─── Task queue (for chaining) ───
+
+let isRunning = false;
+const taskQueue: string[] = [];
+
 // ─── Auto-scroll logic ───
 
 let userScrolledUp = false;
@@ -58,6 +105,30 @@ taskInput.addEventListener('input', () => {
   taskInput.style.height = Math.min(taskInput.scrollHeight, 120) + 'px';
 });
 
+// ─── Input history (terminal-style ↑/↓) ───
+
+const inputHistory: string[] = [];
+let historyIndex = -1;   // -1 = looking at the live draft
+let historyDraft = '';   // saved draft while browsing history
+
+function isOnFirstLine(): boolean {
+  return !taskInput.value.slice(0, taskInput.selectionStart).includes('\n');
+}
+
+function isOnLastLine(): boolean {
+  return !taskInput.value.slice(taskInput.selectionStart).includes('\n');
+}
+
+function applyHistoryValue(val: string) {
+  taskInput.value = val;
+  taskInput.style.height = 'auto';
+  taskInput.style.height = Math.min(taskInput.scrollHeight, 120) + 'px';
+  // Place cursor at end, like a real terminal
+  requestAnimationFrame(() => {
+    taskInput.selectionStart = taskInput.selectionEnd = taskInput.value.length;
+  });
+}
+
 // ─── Welcome card ───
 
 dismissWelcome.addEventListener('click', () => {
@@ -72,6 +143,7 @@ async function checkWelcome() {
   }
 }
 checkWelcome();
+restoreHistory();
 
 // ─── Settings UI ───
 
@@ -105,9 +177,9 @@ const PROVIDER_LABELS: Record<string, string> = {
 
 const PROVIDER_MODELS: Record<string, Array<{ value: string; label: string }>> = {
   anthropic: [
-    { value: 'claude-opus-4-0626', label: 'Claude Opus 4' },
-    { value: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-    { value: 'claude-haiku-4-20250414', label: 'Claude Haiku 4' },
+    { value: 'claude-opus-4-6', label: 'Claude Opus 4.6' },
+    { value: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6' },
+    { value: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5' },
   ],
   openai: [
     { value: 'gpt-4o', label: 'GPT-4o' },
@@ -135,7 +207,7 @@ const PROVIDER_KEY_URLS: Record<string, string> = {
 };
 
 const DEFAULT_MODELS: Record<string, string> = {
-  anthropic: 'claude-sonnet-4-20250514',
+  anthropic: 'claude-sonnet-4-6',
   openai: 'gpt-4o',
   gemini: 'gemini-2.5-flash',
   ollama: 'llama3.3',
@@ -353,16 +425,28 @@ function renderMarkdownLite(text: string): string {
 
 let thinkingEl: HTMLElement | null = null;
 
-function addTaskDivider() {
+function renderTaskDivider(time: string, tabTitle?: string) {
   const div = document.createElement('div');
   div.className = 'task-divider';
-  div.innerHTML = `<span class="task-time">${fmtTime()}</span>`;
+  let inner = `<span class="task-time">${esc(time)}</span>`;
+  if (tabTitle) {
+    const short = tabTitle.length > 40 ? tabTitle.slice(0, 37) + '…' : tabTitle;
+    inner += `<span class="task-tab">${esc(short)}</span>`;
+  }
+  div.innerHTML = inner;
   messagesDiv.appendChild(div);
 }
 
-function addMessage(type: string, text: string) {
-  removeThinking();
+function addTaskDivider(tabTitle?: string) {
+  const time = fmtTime();
+  renderTaskDivider(time, tabTitle);
+  if (!isRestoringHistory) {
+    chatHistory.push({ kind: 'divider', time, tabTitle, timestamp: Date.now() });
+    schedSave();
+  }
+}
 
+function renderMessage(type: string, text: string) {
   const div = document.createElement('div');
   div.className = `message ${type}`;
 
@@ -373,18 +457,40 @@ function addMessage(type: string, text: string) {
     div.innerHTML = `<p>${renderMarkdownLite(text)}</p>`;
   }
 
+  const copyBtn = document.createElement('button');
+  copyBtn.className = 'copy-btn';
+  copyBtn.title = 'Copy';
+  copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+  copyBtn.addEventListener('click', () => {
+    navigator.clipboard.writeText(text).then(() => {
+      copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>`;
+      copyBtn.style.color = '#4ade80';
+      setTimeout(() => {
+        copyBtn.innerHTML = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+        copyBtn.style.color = '';
+      }, 1200);
+    });
+  });
+  div.appendChild(copyBtn);
   messagesDiv.appendChild(div);
+}
+
+function addMessage(type: string, text: string) {
+  removeThinking();
+  renderMessage(type, text);
+  if (!isRestoringHistory) {
+    chatHistory.push({ kind: 'message', type, text, timestamp: Date.now() });
+    schedSave();
+  }
   scrollToBottom();
 }
 
-function addPlanGroup(reasoning: string, steps: Array<{ description: string; needsVerification: boolean }>) {
-  removeThinking();
-
+function renderPlanGroup(reasoning: string, steps: Array<{ description: string; needsVerification: boolean }>) {
   const group = document.createElement('div');
   group.className = 'plan-group';
 
   let collapsed = false;
-  const stepsId = `steps-${Date.now()}`;
+  const stepsId = `steps-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 
   group.innerHTML = `
     <div class="plan-header">
@@ -402,7 +508,6 @@ function addPlanGroup(reasoning: string, steps: Array<{ description: string; nee
     </div>
   `;
 
-  // Toggle collapse
   const toggleBtn = group.querySelector('.plan-toggle') as HTMLButtonElement;
   const stepsDiv = group.querySelector(`#${stepsId}`) as HTMLDivElement;
   toggleBtn.addEventListener('click', () => {
@@ -412,17 +517,37 @@ function addPlanGroup(reasoning: string, steps: Array<{ description: string; nee
   });
 
   messagesDiv.appendChild(group);
+}
+
+function addPlanGroup(reasoning: string, steps: Array<{ description: string; needsVerification: boolean }>) {
+  removeThinking();
+  renderPlanGroup(reasoning, steps);
+  if (!isRestoringHistory) {
+    chatHistory.push({ kind: 'plan', reasoning, steps, timestamp: Date.now() });
+    schedSave();
+  }
   scrollToBottom();
 }
 
+const THINKING_LABELS = [
+  'Thinking…', 'Brewing…', 'Plotting…', 'Scheming…', 'Pondering…',
+  'Crunching…', 'Sniffing around…', 'Digging in…', 'On the case…',
+  'One sec…', 'Connecting dots…', 'Reading the room…', 'Cooking…',
+];
+let thinkingLabelIdx = 0;
+
 function showThinking() {
   removeThinking();
+  const label = THINKING_LABELS[thinkingLabelIdx % THINKING_LABELS.length];
+  thinkingLabelIdx++;
+
   thinkingEl = document.createElement('div');
   thinkingEl.className = 'thinking';
   thinkingEl.innerHTML = `
     <span class="thinking-dot"></span>
     <span class="thinking-dot"></span>
     <span class="thinking-dot"></span>
+    <span class="thinking-label">${esc(label)}</span>
   `;
   messagesDiv.appendChild(thinkingEl);
   scrollToBottom();
@@ -436,9 +561,11 @@ function removeThinking() {
 }
 
 function setRunning(running: boolean) {
+  isRunning = running;
+  // Input stays enabled so users can queue the next message while running
+  taskInput.placeholder = running ? 'Queue next task…' : 'What should I do on this page?';
   sendBtn.classList.toggle('hidden', running);
   stopBtn.classList.toggle('hidden', !running);
-  taskInput.disabled = running;
   statusBar.classList.toggle('hidden', !running);
 }
 
@@ -454,6 +581,36 @@ taskInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     sendTask();
+    return;
+  }
+
+  if (e.key === 'ArrowUp' && isOnFirstLine()) {
+    if (inputHistory.length === 0) return;
+    e.preventDefault();
+    if (historyIndex === -1) {
+      // Save the current draft before navigating away
+      historyDraft = taskInput.value;
+      historyIndex = inputHistory.length - 1;
+    } else if (historyIndex > 0) {
+      historyIndex--;
+    }
+    applyHistoryValue(inputHistory[historyIndex]);
+    return;
+  }
+
+  if (e.key === 'ArrowDown' && isOnLastLine()) {
+    if (historyIndex === -1) return; // Nothing to go forward to
+    e.preventDefault();
+    if (historyIndex < inputHistory.length - 1) {
+      historyIndex++;
+      applyHistoryValue(inputHistory[historyIndex]);
+    } else {
+      // Reached the end — restore draft
+      historyIndex = -1;
+      applyHistoryValue(historyDraft);
+      historyDraft = '';
+    }
+    return;
   }
 });
 
@@ -461,24 +618,43 @@ stopBtn.addEventListener('click', () => {
   chrome.runtime.sendMessage({ type: 'STOP_TASK' });
 });
 
-function sendTask() {
-  const task = taskInput.value.trim();
-  if (!task) return;
-
-  // Remove welcome card on first task
+async function startTask(task: string) {
   welcomeCard?.remove();
   chrome.storage.local.set({ welcomeDismissed: true });
 
-  addTaskDivider();
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  addTaskDivider(tab?.title);
   addMessage('user', task);
-  taskInput.value = '';
-  taskInput.style.height = 'auto';
-  userScrolledUp = false; // Reset scroll lock for new task
+  userScrolledUp = false;
   setRunning(true);
   setStatus('Starting…');
   showThinking();
 
   chrome.runtime.sendMessage({ type: 'RUN_TASK', payload: { task } });
+}
+
+async function sendTask() {
+  const task = taskInput.value.trim();
+  if (!task) return;
+
+  // Push to input history (↑/↓ navigation)
+  if (inputHistory[inputHistory.length - 1] !== task) {
+    inputHistory.push(task);
+  }
+  historyIndex = -1;
+  historyDraft = '';
+
+  taskInput.value = '';
+  taskInput.style.height = 'auto';
+
+  if (isRunning) {
+    // Queue it — show confirmation in chat
+    taskQueue.push(task);
+    addMessage('system', `⏳ Queued: "${task.length > 60 ? task.slice(0, 57) + '…' : task}"`);
+    return;
+  }
+
+  await startTask(task);
 }
 
 // ─── Listen for updates from service worker ───
@@ -512,10 +688,15 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'TASK_COMPLETE':
       addMessage('assistant', payload.reasoning);
       setRunning(false);
+      if (taskQueue.length > 0) {
+        const next = taskQueue.shift()!;
+        setTimeout(() => startTask(next), 300);
+      }
       break;
 
     case 'TASK_STOPPED':
       addMessage('system', 'Task stopped.');
+      taskQueue.length = 0; // Clear queue on manual stop
       setRunning(false);
       break;
 
@@ -526,6 +707,10 @@ chrome.runtime.onMessage.addListener((message) => {
     case 'REPLAY_COMPLETE':
       addMessage('assistant', `Replay complete: **${payload.task}**`);
       setRunning(false);
+      if (taskQueue.length > 0) {
+        const next = taskQueue.shift()!;
+        setTimeout(() => startTask(next), 300);
+      }
       break;
 
     case 'RECORDING_SAVED':
@@ -534,6 +719,7 @@ chrome.runtime.onMessage.addListener((message) => {
 
     case 'ERROR':
       addMessage('error', payload.message);
+      taskQueue.length = 0; // Clear queue on error
       setRunning(false);
       break;
 

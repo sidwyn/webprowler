@@ -148,10 +148,7 @@ export async function executeAction(action: Action): Promise<StepResult> {
         await executeNavigate(action.url);
         return { success: true }; // Page will reload
       case 'read':
-        const snapshot = takeSnapshot({
-          filter: 'all',
-          viewportOnly: true,
-        });
+        const snapshot = takeSnapshot({ filter: 'all', viewportOnly: false });
         return { success: true, snapshot };
       case 'wait':
         await delay(action.ms);
@@ -159,7 +156,7 @@ export async function executeAction(action: Action): Promise<StepResult> {
     }
 
     // Brief pause for DOM to settle after action
-    await delay(150);
+    await delay(200);
 
     return { success: true };
   } catch (error) {

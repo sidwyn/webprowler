@@ -179,8 +179,15 @@ function getAccessibleName(el: Element): string {
     return (el as HTMLImageElement).alt || el.getAttribute('title') || '';
   }
 
-  if (['button', 'a', 'summary', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label'].includes(tag)) {
+  if (['button', 'a', 'summary', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'label', 'p', 'td', 'th', 'li', 'span', 'time', 'caption', 'figcaption'].includes(tag)) {
     return getShallowText(el).trim();
+  }
+
+  // For any element with an explicit ARIA role, try to get text
+  const role = el.getAttribute('role');
+  if (role) {
+    const text = getShallowText(el).trim();
+    if (text) return text;
   }
 
   return '';
@@ -255,22 +262,17 @@ function getProps(el: Element): Record<string, string> {
 // ─── Tree building (with shadow DOM + iframe support) ───
 
 function getChildElements(el: Element): Element[] {
-  const children: Element[] = [];
-
-  // 1. Shadow DOM — if the element has an open shadow root, traverse it
+  // Shadow DOM — if open shadow root has children, traverse it
   if (el.shadowRoot) {
-    for (const child of el.shadowRoot.children) {
-      children.push(child);
+    const shadowChildren = Array.from(el.shadowRoot.children);
+    if (shadowChildren.length > 0) {
+      return shadowChildren; // Shadow root replaces light DOM for rendering
     }
-    return children; // Shadow root replaces light DOM children for rendering
+    // Empty shadow root (e.g. custom element with only styles in shadow) —
+    // fall through to light DOM children so we don't lose the real content
   }
 
-  // 2. Regular children
-  for (const child of el.children) {
-    children.push(child);
-  }
-
-  return children;
+  return Array.from(el.children);
 }
 
 function buildNode(el: Element, depth: number, maxDepth: number, viewportOnly: boolean): PageNode | null {
@@ -330,20 +332,23 @@ function buildNode(el: Element, depth: number, maxDepth: number, viewportOnly: b
     if (childNode) children.push(childNode);
   }
 
-  // Prune: skip non-semantic containers with only one child
+  // Prune: skip non-semantic containers with only one child (but keep if parent has meaningful text)
   if (!role && !interactive && !name && children.length === 1) {
     return children[0];
   }
 
-  // Prune: skip empty non-interactive non-semantic leaf nodes
-  if (!role && !interactive && !name && children.length === 0) {
+  // For leaf nodes without a name, try to capture visible text content
+  let displayName = name;
+  if (!displayName && children.length === 0) {
     const text = getShallowText(el);
-    if (!text) return null;
+    if (!text) return null; // Truly empty — prune
+    // Capture the text as the node's name so it appears in the tree
+    displayName = text.length > 120 ? text.slice(0, 117) + '…' : text;
   }
 
   const ref = (interactive || role) ? getOrCreateRef(el) : '';
 
-  return { ref, role, name, tag, props, interactive, depth, children };
+  return { ref, role, name: displayName, tag, props, interactive, depth, children };
 }
 
 // ─── Serialization ───
@@ -393,9 +398,9 @@ export interface SnapshotOptions {
 export function takeSnapshot(options: SnapshotOptions = {}): PageSnapshot {
   const {
     filter = 'all',
-    maxDepth = 12,
+    maxDepth = 15,
     maxChars = 30000,
-    viewportOnly = true,
+    viewportOnly = false,
   } = options;
 
   // Reset refs for fresh snapshot

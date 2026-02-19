@@ -1,5 +1,5 @@
 import * as esbuild from 'esbuild';
-import { cpSync, mkdirSync, existsSync } from 'fs';
+import { cpSync, mkdirSync, existsSync, writeFileSync } from 'fs';
 
 const isWatch = process.argv.includes('--watch');
 
@@ -44,6 +44,11 @@ async function build() {
 
   if (existsSync('public/icons')) {
     cpSync('public/icons', 'dist/icons', { recursive: true });
+  }
+
+  // In watch mode, write a reload token so the service worker can detect changes
+  if (isWatch) {
+    writeFileSync('dist/dev-reload.json', JSON.stringify({ t: Date.now() }));
   }
 
   console.log('✓ Build complete → dist/');

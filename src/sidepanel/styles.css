@@ -335,19 +335,61 @@ body {
   white-space: nowrap;
 }
 
+.task-divider .task-tab {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 160px;
+  color: #27272a;
+  font-style: italic;
+}
+
 /* ─── Messages ─── */
 
 .message {
-  padding: 8px 12px;
+  position: relative;
+  padding: 8px 34px 8px 12px; /* right padding reserves space for copy btn */
   border-radius: 10px;
   max-width: 95%;
   word-wrap: break-word;
   animation: msgFadeIn 0.2s ease-out;
+  cursor: text;
+  user-select: text;
 }
 
 @keyframes msgFadeIn {
   from { opacity: 0; transform: translateY(4px); }
   to { opacity: 1; transform: translateY(0); }
+}
+
+.message .copy-btn {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 5px;
+  padding: 4px 5px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease;
+  color: #71717a;
+  line-height: 1;
+  user-select: none;
+}
+
+.message:hover .copy-btn {
+  opacity: 1;
+}
+
+.message .copy-btn:hover {
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.15);
+  color: #e4e4e7;
 }
 
 .message p {
@@ -388,7 +430,7 @@ body {
   color: #52525b;
   font-size: 12px;
   align-self: flex-start;
-  padding: 4px 8px;
+  padding: 4px 34px 4px 8px;
 }
 
 .message.assistant {
@@ -412,7 +454,7 @@ body {
   color: #4ade80;
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  padding: 3px 8px;
+  padding: 3px 34px 3px 8px;
   display: flex;
   align-items: center;
   gap: 6px;
@@ -514,6 +556,13 @@ body {
   gap: 4px;
   padding: 8px 12px;
   animation: msgFadeIn 0.2s ease-out;
+}
+
+.thinking-label {
+  font-size: 11px;
+  color: #3f3f46;
+  margin-left: 4px;
+  font-style: italic;
 }
 
 .thinking-dot {

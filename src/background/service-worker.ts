@@ -35,7 +35,7 @@ async function loadSettings(): Promise<Settings> {
         model: 'claude-sonnet-4-20250514',
         maxTokens: 4096,
       },
-      maxTreeDepth: 12,
+      maxTreeDepth: 20,
       maxTreeChars: 30000,
       alwaysVerifyNavigation: true,
     };
@@ -76,9 +76,9 @@ async function sendToTab<T>(tabId: number, type: string, payload?: unknown): Pro
 async function getSnapshot(tabId: number): Promise<PageSnapshot> {
   return sendToTab<PageSnapshot>(tabId, 'GET_SNAPSHOT', {
     filter: 'all',
-    maxDepth: currentSettings?.maxTreeDepth ?? 12,
+    maxDepth: currentSettings?.maxTreeDepth ?? 20,
     maxChars: currentSettings?.maxTreeChars ?? 30000,
-    viewportOnly: true,
+    viewportOnly: false,
   });
 }
 
@@ -88,12 +88,22 @@ async function executeActionOnTab(tabId: number, action: Action): Promise<any> {
   // After navigation actions, wait for the new page to be ready
   if (action.kind === 'navigate' || action.kind === 'click') {
     // Give a moment for navigation to start
-    await new Promise(resolve => setTimeout(resolve, 300));
+    await new Promise(resolve => setTimeout(resolve, 400));
 
-    // Check if the tab is navigating
+    // Check if the tab is doing a full page load
     const tab = await chrome.tabs.get(tabId);
     if (tab.status === 'loading') {
       await waitForTabReady(tabId);
+    } else {
+      // SPA / Turbo Drive navigation — tab never enters 'loading'.
+      // Wait for the DOM to stop mutating (React/Turbo finished rendering).
+      try {
+        await sendToTab(tabId, 'WAIT_FOR_DOM_STABLE', { timeout: 5000, stableMs: 500 });
+      } catch {
+        // Content script disconnected mid-navigation — re-inject and wait a beat
+        await new Promise(resolve => setTimeout(resolve, 1200));
+        await ensureContentScript(tabId);
+      }
     }
   }
 
@@ -342,3 +352,19 @@ chrome.action.onClicked.addListener((tab) => {
 });
 
 console.debug('[WebProwler] Service worker loaded');
+
+// ─── Dev hot-reload (only active when _reload.json exists, i.e. `npm run dev`) ───
+
+let _devReloadToken: number | null = null;
+
+async function checkDevReload() {
+  try {
+    const res = await fetch(chrome.runtime.getURL('dev-reload.json') + '?t=' + Date.now());
+    if (!res.ok) return;
+    const { t } = await res.json() as { t: number };
+    if (_devReloadToken === null) { _devReloadToken = t; return; } // first check — just store
+    if (t !== _devReloadToken) chrome.runtime.reload();
+  } catch { /* not in dev mode or file doesn't exist */ }
+}
+
+setInterval(checkDevReload, 1000);

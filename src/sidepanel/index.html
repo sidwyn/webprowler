@@ -1,103 +1,134 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>WebProwler</title>
-  <link rel="stylesheet" href="styles.css" />
-</head>
-<body>
-  <div id="app">
-    <!-- Header -->
-    <header class="header">
-      <h1>🐾 WebProwler</h1>
-      <div class="header-actions">
-        <span id="provider-badge" class="provider-badge hidden"></span>
-        <button id="recordings-btn" class="icon-btn" title="Recordings">📹</button>
-        <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>WebProwler</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <!-- Header -->
+      <header class="header">
+        <h1>🐾 WebProwler</h1>
+        <div class="header-actions">
+          <span id="provider-badge" class="provider-badge hidden"></span>
+          <button id="recordings-btn" class="icon-btn" title="Recordings">
+            📹
+          </button>
+          <button id="settings-btn" class="icon-btn" title="Settings">
+            ⚙️
+          </button>
+        </div>
+      </header>
+
+      <!-- Settings Panel -->
+      <div id="settings-panel" class="panel hidden">
+        <h2>Settings</h2>
+        <label class="field">
+          <span>Provider</span>
+          <select id="llm-provider">
+            <option value="anthropic">Anthropic (Claude)</option>
+            <option value="openai">OpenAI</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="ollama">Ollama (local)</option>
+            <option value="custom">Custom (OpenAI-compatible)</option>
+          </select>
+        </label>
+        <label class="field">
+          <span
+            >API Key
+            <a
+              id="api-key-link"
+              href="#"
+              target="_blank"
+              class="field-link hidden"
+              >Get key ↗</a
+            ></span
+          >
+          <input type="password" id="api-key" placeholder="sk-..." />
+        </label>
+        <label class="field">
+          <span>Model</span>
+          <select id="model-name">
+            <option value="">Select a model…</option>
+          </select>
+        </label>
+        <label class="field hidden" id="base-url-field">
+          <span>Base URL (optional)</span>
+          <input
+            type="text"
+            id="base-url"
+            placeholder="https://api.openai.com/v1"
+          />
+        </label>
+        <button id="save-settings" class="btn btn-primary">Save</button>
       </div>
-    </header>
 
-    <!-- Settings Panel -->
-    <div id="settings-panel" class="panel hidden">
-      <h2>Settings</h2>
-      <label class="field">
-        <span>Provider</span>
-        <select id="llm-provider">
-          <option value="anthropic">Anthropic (Claude)</option>
-          <option value="openai">OpenAI</option>
-          <option value="gemini">Google Gemini</option>
-          <option value="ollama">Ollama (local)</option>
-          <option value="custom">Custom (OpenAI-compatible)</option>
-        </select>
-      </label>
-      <label class="field">
-        <span>API Key <a id="api-key-link" href="#" target="_blank" class="field-link hidden">Get key ↗</a></span>
-        <input type="password" id="api-key" placeholder="sk-..." />
-      </label>
-      <label class="field">
-        <span>Model</span>
-        <select id="model-name">
-          <option value="">Select a model…</option>
-        </select>
-      </label>
-      <label class="field hidden" id="base-url-field">
-        <span>Base URL (optional)</span>
-        <input type="text" id="base-url" placeholder="https://api.openai.com/v1" />
-      </label>
-      <button id="save-settings" class="btn btn-primary">Save</button>
-    </div>
+      <!-- Recordings Panel -->
+      <div id="recordings-panel" class="panel recordings-panel hidden">
+        <h2>Recorded Tasks</h2>
+        <div id="recordings-list"></div>
+      </div>
 
-    <!-- Recordings Panel -->
-    <div id="recordings-panel" class="panel recordings-panel hidden">
-      <h2>Recorded Tasks</h2>
-      <div id="recordings-list"></div>
-    </div>
+      <!-- Chat area -->
+      <div id="chat" class="chat">
+        <div id="messages" class="messages">
+          <!-- Welcome card (removed after first task or dismiss) -->
+          <div id="welcome" class="welcome-card">
+            <h2>Welcome to WebProwler</h2>
+            <ol class="welcome-steps">
+              <li>
+                <span class="welcome-step-num">1</span>
+                <span
+                  >Click ⚙️ and add your API key (Anthropic, OpenAI, or any
+                  provider)</span
+                >
+              </li>
+              <li>
+                <span class="welcome-step-num">2</span>
+                <span>Navigate to any webpage in this tab</span>
+              </li>
+              <li>
+                <span class="welcome-step-num">3</span>
+                <span
+                  >Describe what you want to do —
+                  <strong>"search for X"</strong>,
+                  <strong>"fill in the form"</strong>,
+                  <strong>"click sign in"</strong></span
+                >
+              </li>
+            </ol>
+            <button class="dismiss-btn" id="dismiss-welcome">Got it</button>
+          </div>
+        </div>
+      </div>
 
-    <!-- Chat area -->
-    <div id="chat" class="chat">
-      <div id="messages" class="messages">
-        <!-- Welcome card (removed after first task or dismiss) -->
-        <div id="welcome" class="welcome-card">
-          <h2>Welcome to WebProwler</h2>
-          <ol class="welcome-steps">
-            <li>
-              <span class="welcome-step-num">1</span>
-              <span>Click ⚙️ and add your API key (Anthropic, OpenAI, or any provider)</span>
-            </li>
-            <li>
-              <span class="welcome-step-num">2</span>
-              <span>Navigate to any webpage in this tab</span>
-            </li>
-            <li>
-              <span class="welcome-step-num">3</span>
-              <span>Describe what you want to do — <strong>"search for X"</strong>, <strong>"fill in the form"</strong>, <strong>"click sign in"</strong></span>
-            </li>
-          </ol>
-          <button class="dismiss-btn" id="dismiss-welcome">Got it</button>
+      <!-- Status bar -->
+      <div id="status-bar" class="status-bar hidden">
+        <span id="status-text"></span>
+        <span id="token-count" class="token-count"></span>
+      </div>
+
+      <!-- Input -->
+      <div class="input-area">
+        <textarea
+          id="task-input"
+          placeholder="What should I do on this page?"
+          rows="1"
+        ></textarea>
+        <div class="input-actions">
+          <span class="input-hint"
+            ><kbd>⏎</kbd> send &nbsp;<kbd>↑</kbd><kbd>↓</kbd> history</span
+          >
+          <div class="input-btns">
+            <button id="send-btn" class="btn btn-primary">Send</button>
+            <button id="stop-btn" class="btn btn-danger hidden">Stop</button>
+          </div>
         </div>
       </div>
     </div>
 
-    <!-- Status bar -->
-    <div id="status-bar" class="status-bar hidden">
-      <span id="status-text"></span>
-      <span id="token-count" class="token-count"></span>
-    </div>
-
-    <!-- Input -->
-    <div class="input-area">
-      <textarea id="task-input" placeholder="What should I do on this page?" rows="1"></textarea>
-      <div class="input-actions">
-        <span class="input-hint"><kbd>⏎</kbd> to send</span>
-        <div class="input-btns">
-          <button id="send-btn" class="btn btn-primary">Send</button>
-          <button id="stop-btn" class="btn btn-danger hidden">Stop</button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="app.js" type="module"></script>
-</body>
+    <script src="app.js" type="module"></script>
+  </body>
 </html>

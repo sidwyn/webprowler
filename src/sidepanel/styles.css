@@ -32,10 +32,53 @@ body {
   flex-shrink: 0;
 }
 
-.header h1 {
+.header-logo {
+  display: flex;
+  align-items: center;
+  gap: 7px;
   font-size: 15px;
   font-weight: 600;
   letter-spacing: -0.01em;
+}
+
+/* ─── Tab bar ─── */
+
+.tab-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 14px;
+  background: rgba(255,255,255,0.015);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+  flex-shrink: 0;
+  min-width: 0;
+}
+
+.tab-bar-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #22c55e;
+  flex-shrink: 0;
+  box-shadow: 0 0 5px rgba(34, 197, 94, 0.5);
+}
+
+.tab-bar-favicon {
+  width: 12px;
+  height: 12px;
+  border-radius: 2px;
+  flex-shrink: 0;
+  object-fit: contain;
+}
+
+.tab-bar-title {
+  font-size: 11px;
+  color: #52525b;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .header-actions {
@@ -57,12 +100,15 @@ body {
 .icon-btn {
   background: none;
   border: 1px solid transparent;
-  font-size: 15px;
   cursor: pointer;
-  padding: 4px 6px;
+  padding: 5px 7px;
   border-radius: 6px;
   opacity: 0.6;
   transition: all 0.15s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #a1a1aa;
 }
 
 .icon-btn:hover {
@@ -396,6 +442,25 @@ body {
   margin: 0;
 }
 
+.message p + p {
+  margin-top: 6px;
+}
+
+.message ol,
+.message ul {
+  margin: 4px 0;
+  padding-left: 18px;
+}
+
+.message li {
+  margin: 3px 0;
+  line-height: 1.5;
+}
+
+.message .md-gap {
+  height: 5px;
+}
+
 .message strong {
   font-weight: 600;
   color: #f4f4f5;
@@ -451,7 +516,7 @@ body {
 
 .message.step {
   background: transparent;
-  color: #4ade80;
+  color: #6ee7b7;
   font-size: 12px;
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   padding: 3px 34px 3px 8px;
@@ -472,8 +537,8 @@ body {
 /* ─── Plan group ─── */
 
 .plan-group {
-  background: rgba(139,92,246,0.04);
-  border: 1px solid rgba(139,92,246,0.1);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.07);
   border-radius: 10px;
   padding: 10px 12px;
   animation: msgFadeIn 0.2s ease-out;
@@ -489,14 +554,14 @@ body {
 
 .plan-group .plan-reasoning {
   font-size: 12px;
-  color: #c4b5fd;
+  color: #a1a1aa;
   line-height: 1.4;
 }
 
 .plan-group .plan-toggle {
   font-size: 10px;
-  color: #7c3aed;
-  background: rgba(139,92,246,0.1);
+  color: #60a5fa;
+  background: rgba(59,130,246,0.08);
   border: none;
   border-radius: 4px;
   padding: 2px 6px;
@@ -507,13 +572,13 @@ body {
 }
 
 .plan-group .plan-toggle:hover {
-  background: rgba(139,92,246,0.2);
+  background: rgba(59,130,246,0.15);
 }
 
 .plan-group .plan-steps {
   margin-top: 8px;
   padding-top: 8px;
-  border-top: 1px solid rgba(139,92,246,0.08);
+  border-top: 1px solid rgba(255,255,255,0.05);
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -525,7 +590,7 @@ body {
 
 .plan-group .plan-step {
   font-size: 11px;
-  color: #a78bfa;
+  color: #71717a;
   padding: 2px 0;
   display: flex;
   align-items: center;
@@ -536,14 +601,14 @@ body {
   width: 4px;
   height: 4px;
   border-radius: 99px;
-  background: #7c3aed;
+  background: #3b82f6;
   flex-shrink: 0;
 }
 
 .plan-group .plan-step .verify-tag {
   font-size: 9px;
-  color: #7c3aed;
-  background: rgba(139,92,246,0.1);
+  color: #60a5fa;
+  background: rgba(59,130,246,0.08);
   padding: 0 4px;
   border-radius: 3px;
 }
@@ -566,10 +631,10 @@ body {
 }
 
 .thinking-dot {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
-  background: #3b82f6;
+  background: #52525b;
   animation: thinkingBounce 1.4s ease-in-out infinite;
 }
 

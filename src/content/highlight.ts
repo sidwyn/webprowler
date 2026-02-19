@@ -72,6 +72,47 @@ function ensureStyles() {
     .wp-highlight-overlay.wp-pulse {
       animation: wp-pulse 0.8s ease-in-out infinite;
     }
+
+    @keyframes wp-scan-in {
+      from { opacity: 0; }
+      to   { opacity: 1; }
+    }
+    @keyframes wp-scan-out {
+      from { opacity: 1; }
+      to   { opacity: 0; }
+    }
+
+    .wp-scan-frame {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 2147483647;
+      border: 2px solid rgba(59, 130, 246, 0.55);
+      box-shadow: inset 0 0 40px rgba(59, 130, 246, 0.06);
+      animation: wp-scan-in 0.15s ease-out;
+    }
+
+    .wp-scan-frame.wp-scan-fade {
+      animation: wp-scan-out 0.35s ease-out forwards;
+    }
+
+    .wp-scan-label {
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(10, 10, 12, 0.88);
+      color: #93c5fd;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+      font-size: 11px;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 99px;
+      border: 1px solid rgba(59, 130, 246, 0.25);
+      pointer-events: none;
+      z-index: 2147483647;
+      white-space: nowrap;
+    }
   `;
   document.head.appendChild(style);
 }
@@ -194,4 +235,36 @@ export function highlightError(el: Element): void {
 
 export function clearHighlights(): void {
   cleanup();
+}
+
+// ─── Full-page scan overlay ───
+
+let scanFrame: HTMLElement | null = null;
+let scanLabel: HTMLElement | null = null;
+let scanHideTimer: ReturnType<typeof setTimeout> | null = null;
+
+export function showPageScan(label = 'Reading page…'): void {
+  ensureStyles();
+  hidePageScan(); // clear any previous
+
+  const frame = document.createElement('div');
+  frame.className = 'wp-scan-frame';
+  document.documentElement.appendChild(frame);
+  scanFrame = frame;
+
+  const lbl = document.createElement('div');
+  lbl.className = 'wp-scan-label';
+  lbl.textContent = label;
+  document.documentElement.appendChild(lbl);
+  scanLabel = lbl;
+}
+
+export function hidePageScan(): void {
+  if (scanHideTimer) { clearTimeout(scanHideTimer); scanHideTimer = null; }
+  if (scanFrame) {
+    scanFrame.classList.add('wp-scan-fade');
+    const f = scanFrame, l = scanLabel;
+    scanFrame = null; scanLabel = null;
+    scanHideTimer = setTimeout(() => { f.remove(); l?.remove(); }, 380);
+  }
 }

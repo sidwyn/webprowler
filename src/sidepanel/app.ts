@@ -32,6 +32,9 @@ const recordingsBtn = $('#recordings-btn') as HTMLButtonElement;
 const recordingsPanel = $('#recordings-panel') as HTMLDivElement;
 const recordingsList = $('#recordings-list') as HTMLDivElement;
 
+const tabTitleEl = $('#tab-title') as HTMLSpanElement;
+const tabFaviconEl = $('#tab-favicon') as HTMLImageElement;
+
 const welcomeCard = $('#welcome') as HTMLDivElement;
 const dismissWelcome = $('#dismiss-welcome') as HTMLButtonElement;
 
@@ -144,6 +147,36 @@ async function checkWelcome() {
 }
 checkWelcome();
 restoreHistory();
+
+// ─── Active tab display ───
+
+async function updateTabBar() {
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (!tab) return;
+
+    const title = tab.title || tab.url || 'Unknown tab';
+    tabTitleEl.textContent = title.length > 60 ? title.slice(0, 57) + '…' : title;
+
+    if (tab.favIconUrl) {
+      tabFaviconEl.src = tab.favIconUrl;
+      tabFaviconEl.classList.remove('hidden');
+    } else {
+      tabFaviconEl.classList.add('hidden');
+    }
+  } catch {
+    // Side panel may open before a tab is active
+  }
+}
+
+updateTabBar();
+
+chrome.tabs.onActivated.addListener(() => updateTabBar());
+chrome.tabs.onUpdated.addListener((_tabId, changeInfo) => {
+  if (changeInfo.title || changeInfo.favIconUrl || changeInfo.status === 'complete') {
+    updateTabBar();
+  }
+});
 
 // ─── Settings UI ───
 
@@ -413,12 +446,47 @@ function fmtTime(): string {
   return new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-/** Lightweight markdown: **bold**, `code`, [link](url) */
-function renderMarkdownLite(text: string): string {
+/** Inline markdown: **bold**, `code`, [link](url) */
+function renderInline(text: string): string {
   return esc(text)
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/`(.+?)`/g, '<code>$1</code>')
     .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+/** Block markdown: numbered lists, bullets, paragraphs, inline formatting */
+function renderMarkdownLite(text: string): string {
+  const lines = text.split('\n');
+  const out: string[] = [];
+  let listType: 'ol' | 'ul' | null = null;
+
+  const closeList = () => {
+    if (listType) { out.push(listType === 'ol' ? '</ol>' : '</ul>'); listType = null; }
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+
+    const olMatch = line.match(/^(\d+)[.)]\s+(.+)/);
+    const ulMatch = line.match(/^[-*]\s+(.+)/);
+
+    if (olMatch) {
+      if (listType !== 'ol') { closeList(); out.push('<ol>'); listType = 'ol'; }
+      out.push(`<li>${renderInline(olMatch[2])}</li>`);
+    } else if (ulMatch) {
+      if (listType !== 'ul') { closeList(); out.push('<ul>'); listType = 'ul'; }
+      out.push(`<li>${renderInline(ulMatch[1])}</li>`);
+    } else {
+      closeList();
+      if (line === '') {
+        out.push('<div class="md-gap"></div>');
+      } else {
+        out.push(`<p>${renderInline(line)}</p>`);
+      }
+    }
+  }
+  closeList();
+  return out.join('');
 }
 
 // ─── Chat UI ───
@@ -714,7 +782,7 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'RECORDING_SAVED':
-      addMessage('system', `📹 Recorded ${payload.stepCount} steps`);
+      // Recording saved silently — recordings UI is hidden
       break;
 
     case 'ERROR':

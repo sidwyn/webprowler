@@ -343,11 +343,30 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   }
 });
 
-// ─── Open side panel on icon click ───
+// ─── Per-tab side panel ───
+// Panel is tied to the tab it was opened from.
+// Switching to a different tab closes it; switching back reopens it.
+
+let panelTabId: number | null = null;
 
 chrome.action.onClicked.addListener((tab) => {
-  if (tab.windowId) {
-    chrome.sidePanel.open({ windowId: tab.windowId });
+  if (tab.id) {
+    panelTabId = tab.id;
+    chrome.sidePanel.open({ tabId: tab.id });
+  }
+});
+
+chrome.tabs.onActivated.addListener(async ({ tabId, windowId }) => {
+  if (panelTabId === null) return;
+
+  if (tabId === panelTabId) {
+    // Returning to the panel's tab — reopen it
+    try { await chrome.sidePanel.open({ tabId }); } catch { /* requires user gesture in some builds */ }
+  } else {
+    // Switched away — close the panel
+    try {
+      await (chrome.sidePanel as any).close({ windowId });
+    } catch { /* sidePanel.close not available in this Chrome version */ }
   }
 });
 

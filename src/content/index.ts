@@ -5,6 +5,7 @@
 
 import { takeSnapshot, resolveRef, type SnapshotOptions } from './parser';
 import { executeAction } from './actions';
+import { showPageScan, hidePageScan } from './highlight';
 import type { Action } from '../types';
 
 // Make functions available on window for debugging
@@ -64,10 +65,13 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 
     case 'GET_SNAPSHOT': {
       const options = (payload ?? {}) as SnapshotOptions;
+      showPageScan();
       try {
         const snapshot = takeSnapshot(options);
+        setTimeout(hidePageScan, 600);
         sendResponse({ success: true, data: snapshot });
       } catch (error) {
+        hidePageScan();
         sendResponse({ success: false, error: String(error) });
       }
       return false; // synchronous

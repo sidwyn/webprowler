@@ -641,6 +641,38 @@ function setStatus(text: string) {
   statusText.innerHTML = `<span class="spinner"></span>${esc(text)}`;
 }
 
+// ─── Rate limit countdown ───
+
+let rateLimitTimer: ReturnType<typeof setInterval> | null = null;
+
+function clearRateLimitCountdown() {
+  if (rateLimitTimer) {
+    clearInterval(rateLimitTimer);
+    rateLimitTimer = null;
+  }
+}
+
+function startRateLimitCountdown(waitMs: number, attempt: number) {
+  clearRateLimitCountdown();
+
+  const seconds = Math.ceil(waitMs / 1000);
+  const attemptStr = attempt > 1 ? ` (attempt ${attempt})` : '';
+  addMessage('system', `Rate limited — retrying in ${seconds}s${attemptStr}`);
+
+  let remaining = seconds;
+  setStatus(`Rate limited — retrying in ${remaining}s…`);
+
+  rateLimitTimer = setInterval(() => {
+    remaining--;
+    if (remaining <= 0) {
+      clearRateLimitCountdown();
+      setStatus('Retrying…');
+    } else {
+      setStatus(`Rate limited — retrying in ${remaining}s…`);
+    }
+  }, 1000);
+}
+
 // ─── Task execution ───
 
 sendBtn.addEventListener('click', () => sendTask());
@@ -736,13 +768,19 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'PLAN_UPDATE':
+      clearRateLimitCountdown();
       addPlanGroup(payload.reasoning, payload.steps);
       setStatus('Executing…');
       break;
 
     case 'STEP_START':
+      clearRateLimitCountdown();
       setStatus(`Step ${payload.index + 1}: ${payload.description}`);
       showThinking();
+      break;
+
+    case 'RATE_LIMITED':
+      startRateLimitCountdown(payload.waitMs, payload.attempt);
       break;
 
     case 'STEP_COMPLETE':
@@ -763,6 +801,7 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'TASK_STOPPED':
+      clearRateLimitCountdown();
       addMessage('system', 'Task stopped.');
       taskQueue.length = 0; // Clear queue on manual stop
       setRunning(false);
@@ -786,6 +825,7 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'ERROR':
+      clearRateLimitCountdown();
       addMessage('error', payload.message);
       taskQueue.length = 0; // Clear queue on error
       setRunning(false);

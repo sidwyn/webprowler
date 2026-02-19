@@ -196,6 +196,10 @@ async function runTask(task: string) {
       onUsage(inputTokens, outputTokens) {
         broadcastToSidePanel('USAGE_UPDATE', { inputTokens, outputTokens });
       },
+
+      onRateLimit(waitMs, attempt) {
+        broadcastToSidePanel('RATE_LIMITED', { waitMs, attempt });
+      },
     };
 
     await runPlanner(task, llmProvider, callbacks);

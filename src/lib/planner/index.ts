@@ -29,11 +29,12 @@ export interface PlannerCallbacks {
   onComplete(reasoning: string): void;
   onError(error: string): void;
   onUsage(inputTokens: number, outputTokens: number): void;
+  onRateLimit(waitMs: number, attempt: number): void;
 }
 
 const MAX_ITERATIONS = 15;
 const MAX_JSON_RETRIES = 2;
-const MAX_API_RETRIES = 3;
+const MAX_API_RETRIES = 5; // increased — rate limits need more patience
 
 // ─── JSON parsing with recovery ───
 
@@ -92,32 +93,48 @@ function parsePlan(raw: string): Plan {
 
 // ─── API call with retries ───
 
+function classifyError(msg: string): 'tpm' | 'rpm' | 'server' | 'fatal' {
+  if (msg.includes('429') || msg.includes('rate')) {
+    // Token-per-minute limits reset on a ~60s window — need longer waits
+    if (msg.includes('tokens per minute') || msg.includes('input tokens per minute') ||
+        msg.includes('output tokens per minute')) return 'tpm';
+    return 'rpm';
+  }
+  if (msg.includes('500') || msg.includes('502') || msg.includes('503') ||
+      msg.includes('529') || msg.includes('overloaded')) return 'server';
+  return 'fatal';
+}
+
+function backoffMs(kind: 'tpm' | 'rpm' | 'server', attempt: number): number {
+  switch (kind) {
+    case 'tpm':    // TPM resets every minute — start at 15s, cap at 65s
+      return Math.min(15_000 * Math.pow(1.5, attempt), 65_000);
+    case 'rpm':    // RPM — start at 5s, cap at 60s
+      return Math.min(5_000 * Math.pow(2, attempt), 60_000);
+    case 'server': // Transient server errors — start at 2s
+      return Math.min(2_000 * Math.pow(2, attempt), 16_000);
+  }
+}
+
 async function callLLMWithRetry(
   llm: LLMProvider,
   messages: LLMMessage[],
-  maxRetries: number = MAX_API_RETRIES,
+  onWait: (waitMs: number, attempt: number) => void,
 ): Promise<{ content: string; usage?: { inputTokens: number; outputTokens: number } }> {
   let lastError: Error | null = null;
 
-  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+  for (let attempt = 0; attempt <= MAX_API_RETRIES; attempt++) {
     try {
       return await llm.chat(messages);
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
+      const kind = classifyError(lastError.message);
 
-      // Check if retryable (rate limit or server error)
-      const msg = lastError.message;
-      const isRetryable = msg.includes('429') || msg.includes('500') ||
-        msg.includes('502') || msg.includes('503') || msg.includes('529') ||
-        msg.includes('overloaded') || msg.includes('rate');
+      if (kind === 'fatal' || attempt === MAX_API_RETRIES) throw lastError;
 
-      if (!isRetryable || attempt === maxRetries) {
-        throw lastError;
-      }
-
-      // Exponential backoff: 1s, 2s, 4s
-      const delayMs = 1000 * Math.pow(2, attempt);
-      await new Promise(resolve => setTimeout(resolve, delayMs));
+      const waitMs = backoffMs(kind, attempt);
+      onWait(waitMs, attempt + 1);
+      await new Promise(resolve => setTimeout(resolve, waitMs));
     }
   }
 
@@ -131,6 +148,7 @@ async function getPlanFromLLM(
   conversationHistory: LLMMessage[],
   onUsage: (input: number, output: number) => void,
   totalUsage: { input: number; output: number },
+  onWait: (waitMs: number, attempt: number) => void,
 ): Promise<{ plan: Plan; rawResponse: string }> {
   let lastParseError: string | null = null;
 
@@ -143,7 +161,7 @@ async function getPlanFromLLM(
       });
     }
 
-    const response = await callLLMWithRetry(llm, conversationHistory);
+    const response = await callLLMWithRetry(llm, conversationHistory, onWait);
 
     if (response.usage) {
       totalUsage.input += response.usage.inputTokens;
@@ -278,6 +296,7 @@ export async function runPlanner(
         conversationHistory,
         callbacks.onUsage,
         totalUsage,
+        callbacks.onRateLimit,
       );
       plan = result.plan;
     } catch (error) {

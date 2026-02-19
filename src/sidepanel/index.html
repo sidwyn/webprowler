@@ -12,13 +12,14 @@
     <header class="header">
       <h1>🐾 WebProwler</h1>
       <div class="header-actions">
+        <span id="provider-badge" class="provider-badge hidden"></span>
         <button id="recordings-btn" class="icon-btn" title="Recordings">📹</button>
         <button id="settings-btn" class="icon-btn" title="Settings">⚙️</button>
       </div>
     </header>
 
-    <!-- Settings Panel (hidden by default) -->
-    <div id="settings-panel" class="settings hidden">
+    <!-- Settings Panel -->
+    <div id="settings-panel" class="panel hidden">
       <h2>Settings</h2>
       <label class="field">
         <span>Provider</span>
@@ -38,15 +39,15 @@
         <span>Model</span>
         <input type="text" id="model-name" placeholder="claude-sonnet-4-20250514" />
       </label>
-      <label class="field" id="base-url-field">
+      <label class="field hidden" id="base-url-field">
         <span>Base URL (optional)</span>
         <input type="text" id="base-url" placeholder="https://api.openai.com/v1" />
       </label>
       <button id="save-settings" class="btn btn-primary">Save</button>
     </div>
 
-    <!-- Recordings Panel (hidden by default) -->
-    <div id="recordings-panel" class="recordings-panel hidden">
+    <!-- Recordings Panel -->
+    <div id="recordings-panel" class="panel recordings-panel hidden">
       <h2>Recorded Tasks</h2>
       <div id="recordings-list"></div>
     </div>
@@ -54,8 +55,24 @@
     <!-- Chat area -->
     <div id="chat" class="chat">
       <div id="messages" class="messages">
-        <div class="message system">
-          <p>Ready. Type a task and I'll navigate the current page for you.</p>
+        <!-- Welcome card (removed after first task or dismiss) -->
+        <div id="welcome" class="welcome-card">
+          <h2>Welcome to WebProwler</h2>
+          <ol class="welcome-steps">
+            <li>
+              <span class="welcome-step-num">1</span>
+              <span>Click ⚙️ and add your API key (Anthropic, OpenAI, or any provider)</span>
+            </li>
+            <li>
+              <span class="welcome-step-num">2</span>
+              <span>Navigate to any webpage in this tab</span>
+            </li>
+            <li>
+              <span class="welcome-step-num">3</span>
+              <span>Describe what you want to do — <strong>"search for X"</strong>, <strong>"fill in the form"</strong>, <strong>"click sign in"</strong></span>
+            </li>
+          </ol>
+          <button class="dismiss-btn" id="dismiss-welcome">Got it</button>
         </div>
       </div>
     </div>
@@ -68,10 +85,13 @@
 
     <!-- Input -->
     <div class="input-area">
-      <textarea id="task-input" placeholder="e.g. Search for 'web agent' and click the first result" rows="2"></textarea>
+      <textarea id="task-input" placeholder="What should I do on this page?" rows="1"></textarea>
       <div class="input-actions">
-        <button id="send-btn" class="btn btn-primary">Send</button>
-        <button id="stop-btn" class="btn btn-danger hidden">Stop</button>
+        <span class="input-hint"><kbd>⏎</kbd> to send</span>
+        <div class="input-btns">
+          <button id="send-btn" class="btn btn-primary">Send</button>
+          <button id="stop-btn" class="btn btn-danger hidden">Stop</button>
+        </div>
       </div>
     </div>
   </div>

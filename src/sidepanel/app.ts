@@ -1,6 +1,6 @@
 /**
- * Side panel app — thin UI layer.
- * Sends tasks to service worker, renders status updates, manages recordings.
+ * Side panel app.
+ * Handles chat UI, settings, recordings, and smart auto-scroll.
  */
 
 // ─── DOM refs ───
@@ -15,7 +15,9 @@ const modelInput = $('#model-name') as HTMLInputElement;
 const baseUrlInput = $('#base-url') as HTMLInputElement;
 const baseUrlField = $('#base-url-field') as HTMLElement;
 const saveSettingsBtn = $('#save-settings') as HTMLButtonElement;
+const providerBadge = $('#provider-badge') as HTMLSpanElement;
 
+const chatDiv = $('#chat') as HTMLDivElement;
 const messagesDiv = $('#messages') as HTMLDivElement;
 const statusBar = $('#status-bar') as HTMLDivElement;
 const statusText = $('#status-text') as HTMLSpanElement;
@@ -29,26 +31,99 @@ const recordingsBtn = $('#recordings-btn') as HTMLButtonElement;
 const recordingsPanel = $('#recordings-panel') as HTMLDivElement;
 const recordingsList = $('#recordings-list') as HTMLDivElement;
 
+const welcomeCard = $('#welcome') as HTMLDivElement;
+const dismissWelcome = $('#dismiss-welcome') as HTMLButtonElement;
+
+// ─── Auto-scroll logic ───
+
+let userScrolledUp = false;
+
+chatDiv.addEventListener('scroll', () => {
+  const { scrollTop, scrollHeight, clientHeight } = chatDiv;
+  // If user scrolled more than 60px from bottom, they're reading history
+  userScrolledUp = scrollHeight - scrollTop - clientHeight > 60;
+});
+
+function scrollToBottom() {
+  if (!userScrolledUp) {
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+  }
+}
+
+// ─── Auto-resize textarea ───
+
+taskInput.addEventListener('input', () => {
+  taskInput.style.height = 'auto';
+  taskInput.style.height = Math.min(taskInput.scrollHeight, 120) + 'px';
+});
+
+// ─── Welcome card ───
+
+dismissWelcome.addEventListener('click', () => {
+  welcomeCard.remove();
+  chrome.storage.local.set({ welcomeDismissed: true });
+});
+
+async function checkWelcome() {
+  const data = await chrome.storage.local.get('welcomeDismissed');
+  if (data.welcomeDismissed) {
+    welcomeCard?.remove();
+  }
+}
+checkWelcome();
+
 // ─── Settings UI ───
 
-settingsBtn.addEventListener('click', () => {
-  settingsPanel.classList.toggle('hidden');
+function togglePanel(panel: HTMLElement, btn: HTMLElement) {
+  const isOpen = !panel.classList.contains('hidden');
+  // Close all panels
+  settingsPanel.classList.add('hidden');
   recordingsPanel.classList.add('hidden');
+  settingsBtn.classList.remove('active');
+  recordingsBtn.classList.remove('active');
+  // Toggle this one
+  if (!isOpen) {
+    panel.classList.remove('hidden');
+    btn.classList.add('active');
+  }
+}
+
+settingsBtn.addEventListener('click', () => togglePanel(settingsPanel, settingsBtn));
+recordingsBtn.addEventListener('click', () => {
+  togglePanel(recordingsPanel, recordingsBtn);
+  if (!recordingsPanel.classList.contains('hidden')) loadRecordings();
 });
+
+const PROVIDER_LABELS: Record<string, string> = {
+  anthropic: 'Claude',
+  openai: 'OpenAI',
+  gemini: 'Gemini',
+  ollama: 'Ollama',
+  custom: 'Custom',
+};
+
+const MODEL_PLACEHOLDERS: Record<string, string> = {
+  anthropic: 'claude-sonnet-4-20250514',
+  openai: 'gpt-4o',
+  gemini: 'gemini-2.0-flash',
+  ollama: 'llama3.3',
+  custom: 'model-name',
+};
 
 providerSelect.addEventListener('change', () => {
-  const needsBaseUrl = ['ollama', 'custom'].includes(providerSelect.value);
-  baseUrlField.classList.toggle('hidden', !needsBaseUrl);
-
-  const placeholders: Record<string, string> = {
-    anthropic: 'claude-sonnet-4-20250514',
-    openai: 'gpt-4o',
-    gemini: 'gemini-2.0-flash',
-    ollama: 'llama3.3',
-    custom: 'model-name',
-  };
-  modelInput.placeholder = placeholders[providerSelect.value] ?? '';
+  const val = providerSelect.value;
+  baseUrlField.classList.toggle('hidden', !['ollama', 'custom'].includes(val));
+  modelInput.placeholder = MODEL_PLACEHOLDERS[val] ?? '';
 });
+
+function updateProviderBadge(provider?: string) {
+  if (provider && PROVIDER_LABELS[provider]) {
+    providerBadge.textContent = PROVIDER_LABELS[provider];
+    providerBadge.classList.remove('hidden');
+  } else {
+    providerBadge.classList.add('hidden');
+  }
+}
 
 saveSettingsBtn.addEventListener('click', async () => {
   const settings = {
@@ -66,6 +141,8 @@ saveSettingsBtn.addEventListener('click', async () => {
 
   await chrome.runtime.sendMessage({ type: 'SAVE_SETTINGS', payload: settings });
   settingsPanel.classList.add('hidden');
+  settingsBtn.classList.remove('active');
+  updateProviderBadge(settings.llm.provider);
   addMessage('system', 'Settings saved ✓');
 });
 
@@ -77,19 +154,12 @@ async function loadSettings() {
     modelInput.value = settings.llm.model || '';
     baseUrlInput.value = settings.llm.baseUrl || '';
     providerSelect.dispatchEvent(new Event('change'));
+    updateProviderBadge(settings.llm.apiKey ? settings.llm.provider : undefined);
   }
 }
 loadSettings();
 
 // ─── Recordings UI ───
-
-recordingsBtn.addEventListener('click', () => {
-  recordingsPanel.classList.toggle('hidden');
-  settingsPanel.classList.add('hidden');
-  if (!recordingsPanel.classList.contains('hidden')) {
-    loadRecordings();
-  }
-});
 
 async function loadRecordings() {
   const recordings = await chrome.runtime.sendMessage({ type: 'LIST_RECORDINGS' });
@@ -109,8 +179,8 @@ async function loadRecordings() {
     div.className = 'recording-item';
     div.innerHTML = `
       <div class="recording-info">
-        <span class="recording-task">${escapeHtml(rec.task.slice(0, 60))}${rec.task.length > 60 ? '…' : ''}</span>
-        <span class="recording-meta">${timeStr} · ${successSteps} steps · ${formatDuration(rec.duration)}</span>
+        <span class="recording-task">${esc(rec.task.slice(0, 60))}${rec.task.length > 60 ? '…' : ''}</span>
+        <span class="recording-meta">${timeStr} · ${successSteps} steps · ${fmtDuration(rec.duration)}</span>
       </div>
       <div class="recording-actions">
         <button class="btn-sm btn-replay" data-id="${rec.id}" title="Replay">▶️</button>
@@ -120,15 +190,15 @@ async function loadRecordings() {
     recordingsList.appendChild(div);
   }
 
-  // Event delegation for recording buttons
   recordingsList.querySelectorAll('.btn-replay').forEach(btn => {
     btn.addEventListener('click', () => {
       const id = (btn as HTMLElement).dataset.id!;
       chrome.runtime.sendMessage({ type: 'REPLAY_RECORDING', payload: { id } });
       recordingsPanel.classList.add('hidden');
-      addMessage('system', '🔄 Replaying recorded task...');
+      recordingsBtn.classList.remove('active');
+      addMessage('system', '🔄 Replaying recorded task…');
       setRunning(true);
-      setStatus('Replaying...');
+      setStatus('Replaying…');
     });
   });
 
@@ -141,29 +211,115 @@ async function loadRecordings() {
   });
 }
 
-function formatDuration(ms: number): string {
+// ─── Helpers ───
+
+function esc(str: string): string {
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+function fmtDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   const secs = Math.round(ms / 1000);
   if (secs < 60) return `${secs}s`;
   return `${Math.floor(secs / 60)}m ${secs % 60}s`;
 }
 
-// ─── Chat UI ───
-
-function addMessage(type: string, text: string) {
-  const div = document.createElement('div');
-  div.className = `message ${type}`;
-  div.innerHTML = `<p>${escapeHtml(text)}</p>`;
-  messagesDiv.appendChild(div);
-  messagesDiv.scrollTop = messagesDiv.scrollHeight;
+function fmtTime(): string {
+  return new Date().toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/** Lightweight markdown: **bold**, `code`, [link](url) */
+function renderMarkdownLite(text: string): string {
+  return esc(text)
+    .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+    .replace(/`(.+?)`/g, '<code>$1</code>')
+    .replace(/\[(.+?)\]\((.+?)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+// ─── Chat UI ───
+
+let thinkingEl: HTMLElement | null = null;
+
+function addTaskDivider() {
+  const div = document.createElement('div');
+  div.className = 'task-divider';
+  div.innerHTML = `<span class="task-time">${fmtTime()}</span>`;
+  messagesDiv.appendChild(div);
+}
+
+function addMessage(type: string, text: string) {
+  removeThinking();
+
+  const div = document.createElement('div');
+  div.className = `message ${type}`;
+
+  if (type === 'step' || type === 'step failed') {
+    const icon = type === 'step failed' ? '✗' : '✓';
+    div.innerHTML = `<span class="step-icon">${icon}</span><p>${esc(text)}</p>`;
+  } else {
+    div.innerHTML = `<p>${renderMarkdownLite(text)}</p>`;
+  }
+
+  messagesDiv.appendChild(div);
+  scrollToBottom();
+}
+
+function addPlanGroup(reasoning: string, steps: Array<{ description: string; needsVerification: boolean }>) {
+  removeThinking();
+
+  const group = document.createElement('div');
+  group.className = 'plan-group';
+
+  let collapsed = false;
+  const stepsId = `steps-${Date.now()}`;
+
+  group.innerHTML = `
+    <div class="plan-header">
+      <span class="plan-reasoning">${renderMarkdownLite(reasoning)}</span>
+      <button class="plan-toggle" data-target="${stepsId}">${steps.length} steps ▾</button>
+    </div>
+    <div class="plan-steps" id="${stepsId}">
+      ${steps.map(s => `
+        <div class="plan-step">
+          <span class="step-bullet"></span>
+          <span>${esc(s.description)}</span>
+          ${s.needsVerification ? '<span class="verify-tag">verify</span>' : ''}
+        </div>
+      `).join('')}
+    </div>
+  `;
+
+  // Toggle collapse
+  const toggleBtn = group.querySelector('.plan-toggle') as HTMLButtonElement;
+  const stepsDiv = group.querySelector(`#${stepsId}`) as HTMLDivElement;
+  toggleBtn.addEventListener('click', () => {
+    collapsed = !collapsed;
+    stepsDiv.classList.toggle('collapsed', collapsed);
+    toggleBtn.textContent = collapsed ? `${steps.length} steps ▸` : `${steps.length} steps ▾`;
+  });
+
+  messagesDiv.appendChild(group);
+  scrollToBottom();
+}
+
+function showThinking() {
+  removeThinking();
+  thinkingEl = document.createElement('div');
+  thinkingEl.className = 'thinking';
+  thinkingEl.innerHTML = `
+    <span class="thinking-dot"></span>
+    <span class="thinking-dot"></span>
+    <span class="thinking-dot"></span>
+  `;
+  messagesDiv.appendChild(thinkingEl);
+  scrollToBottom();
+}
+
+function removeThinking() {
+  if (thinkingEl) {
+    thinkingEl.remove();
+    thinkingEl = null;
+  }
 }
 
 function setRunning(running: boolean) {
@@ -174,7 +330,7 @@ function setRunning(running: boolean) {
 }
 
 function setStatus(text: string) {
-  statusText.innerHTML = `<span class="spinner"></span>${escapeHtml(text)}`;
+  statusText.innerHTML = `<span class="spinner"></span>${esc(text)}`;
 }
 
 // ─── Task execution ───
@@ -196,10 +352,18 @@ function sendTask() {
   const task = taskInput.value.trim();
   if (!task) return;
 
+  // Remove welcome card on first task
+  welcomeCard?.remove();
+  chrome.storage.local.set({ welcomeDismissed: true });
+
+  addTaskDivider();
   addMessage('user', task);
   taskInput.value = '';
+  taskInput.style.height = 'auto';
+  userScrolledUp = false; // Reset scroll lock for new task
   setRunning(true);
-  setStatus('Starting...');
+  setStatus('Starting…');
+  showThinking();
 
   chrome.runtime.sendMessage({ type: 'RUN_TASK', payload: { task } });
 }
@@ -211,26 +375,24 @@ chrome.runtime.onMessage.addListener((message) => {
 
   switch (type) {
     case 'TASK_STARTED':
-      setStatus('Reading page...');
+      setStatus('Reading page…');
       break;
 
     case 'PLAN_UPDATE':
-      addMessage('plan', `💭 ${payload.reasoning}`);
-      for (const step of payload.steps) {
-        addMessage('system', `→ ${step.description}${step.needsVerification ? ' (will verify)' : ''}`);
-      }
-      setStatus('Executing...');
+      addPlanGroup(payload.reasoning, payload.steps);
+      setStatus('Executing…');
       break;
 
     case 'STEP_START':
       setStatus(`Step ${payload.index + 1}: ${payload.description}`);
+      showThinking();
       break;
 
     case 'STEP_COMPLETE':
       if (payload.success) {
-        addMessage('step', `✓ ${payload.description}`);
+        addMessage('step', payload.description);
       } else {
-        addMessage('step failed', `✗ ${payload.description}: ${payload.error}`);
+        addMessage('step failed', `${payload.description}: ${payload.error}`);
       }
       break;
 
@@ -249,16 +411,16 @@ chrome.runtime.onMessage.addListener((message) => {
       break;
 
     case 'REPLAY_COMPLETE':
-      addMessage('assistant', `✅ Replay complete: ${payload.task}`);
+      addMessage('assistant', `Replay complete: **${payload.task}**`);
       setRunning(false);
       break;
 
     case 'RECORDING_SAVED':
-      addMessage('system', `📹 Recorded ${payload.stepCount} steps. View in Recordings.`);
+      addMessage('system', `📹 Recorded ${payload.stepCount} steps`);
       break;
 
     case 'ERROR':
-      addMessage('error', `Error: ${payload.message}`);
+      addMessage('error', payload.message);
       setRunning(false);
       break;
 
